@@ -1248,8 +1248,12 @@ def backup_database(conn, keep: int = 30) -> str:
 （顶部需 `import os`、`from pathlib import Path`）main() 普通模式收尾改为：
 
 ```python
-    if not bad:
-        backup_database(conn)   # 设计 §6：全部成功后备份，保留 30 天
+```python
+    try:
+        if not bad:
+            backup_database(conn)   # 设计 §6：全部成功后备份，保留 30 天
+    except Exception:
+        log.warning("数据库备份失败", exc_info=True)  # 备份故障不误触发 OnFailure
     log.info("完成：%d 源，failed=%d empty/stale=%d", len(results), len(bad),
              sum(1 for r in results if r["status"] in ("empty", "stale")))
     # 不显式 close：CLI 进程退出即释放；测试会注入连接，close 会伤及 fixture
@@ -1275,12 +1279,13 @@ WantedBy=timers.target
 # deploy/systemd/data-collect.service
 [Unit]
 Description=数据追踪平台·采集任务（docker compose run）
+After=docker.service
+OnFailure=data-notify@%n
 
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/dtp
 ExecStart=docker compose run --rm collect
-OnFailure=data-notify@%n
 ```
 
 ```ini
@@ -1319,8 +1324,14 @@ docker compose run --rm collect uv run --no-sync python -m backend.collect \
   --backfill --from 2015-01-01
 
 # 4) 定时采集（宿主机 systemd；要求宿主机时区为 Asia/Shanghai）
+#    前置：项目需已放置在 /opt/dtp（git clone 或 rsync）；
 sudo cp deploy/systemd/* /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now data-collect.timer
+
+# 5) 运维速查
+#    systemctl list-timers data-collect.timer   # 下次触发时间
+#    journalctl -u data-collect.service -f      # 采集日志
+#    备份在 data/backups/；恢复 = 停服务后用备份文件覆盖 data/dtp.db
 ```
 ````
 
