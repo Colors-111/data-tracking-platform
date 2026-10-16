@@ -1,7 +1,11 @@
 INSERT OR IGNORE INTO sources(id,name,group_name,freq,fetcher,unit,movement_th,lag_days,enabled,sort_order) VALUES
  ('hs300-etf','沪深300 ETF','指数 ETF','daily','akshare.sse_etf_scale','亿份',1.0,1,1,1),
  ('cu-inventory','电解铜库存','大宗商品','daily','akshare.futures_inventory_em','吨',2.0,1,1,2),
- ('coal-price','煤炭价格','大宗商品','daily','scrapers.coal_price','元/吨',1.0,1,1,3);
+ ('coal-price','煤炭价格','大宗商品','daily','scrapers.coal_price','元/吨',1.0,1,1,3),
+ ('csi500-etf','中证500 ETF','指数 ETF','daily','akshare.etf_scale','亿份',1.0,1,1,10),
+ ('star50-etf','科创50 ETF','指数 ETF','daily','akshare.etf_scale','亿份',1.0,1,1,11),
+ ('chinext-etf','创业板 ETF','指数 ETF','daily','akshare.etf_scale','亿份',1.0,1,1,12),
+ ('dividend-etf','红利 ETF','指数 ETF','daily','akshare.etf_scale','亿份',1.0,1,1,13);
 
 INSERT OR IGNORE INTO instruments(id,source_id,code,metric,name,sort_order) VALUES
  ('510300','hs300-etf','510300','share','沪深300ETF华泰柏瑞',1),
@@ -10,4 +14,16 @@ INSERT OR IGNORE INTO instruments(id,source_id,code,metric,name,sort_order) VALU
  ('510330','hs300-etf','510330','share','沪深300ETF华夏',4),
  ('510350','hs300-etf','510350','share','沪深300ETF工银',5),
  ('cu-inventory','cu-inventory','cu','inventory','电解铜库存',1),
- ('coal-price','coal-price',NULL,'price','动力煤现货价',1);
+ ('coal-price','coal-price',NULL,'price','动力煤现货价',1),
+ ('159922','csi500-etf','159922','share','中证500ETF嘉实',1),
+ ('512500','csi500-etf','512500','share','中证500ETF南方',2),
+ ('159820','csi500-etf','159820','share','中证500ETF天弘',3),
+ ('588000','star50-etf','588000','share','科创50ETF华夏',1),
+ ('588080','star50-etf','588080','share','科创板50ETF易方达',2),
+ ('588020','star50-etf','588020','share','科创50ETF',3),
+ ('159915','chinext-etf','159915','share','创业板ETF易方达',1),
+ ('159949','chinext-etf','159949','share','创业板50ETF华安',2),
+ ('159952','chinext-etf','159952','share','创业板ETF广发',3),
+ ('512890','dividend-etf','512890','share','红利低波ETF',1),
+ ('515450','dividend-etf','515450','share','红利50ETF',2),
+ ('515180','dividend-etf','515180','share','中证红利ETF',3);
