@@ -38,3 +38,25 @@ def test_fetch_converts_to_yi(sse_env):
 
 def test_lag_days_is_one(sse_env):
     assert sse_env.lag_days == 1
+
+def test_fetch_empty_df_returns_empty(sse_env, monkeypatch):
+    # T+1 滞后日接口可能返回空表，生产路径须返回 [] 而非报错
+    import backend.fetchers.akshare_sse_etf as mod
+    monkeypatch.setattr(mod.ak, "fund_etf_scale_sse", lambda d: pd.DataFrame())
+    assert sse_env.fetch("2026-09-30") == []
+
+def test_missing_column_raises(sse_env, monkeypatch):
+    # 锁定 _col fail-loud：缺份额列时抛 ValueError，而非静默产出错误数据
+    import backend.fetchers.akshare_sse_etf as mod
+    monkeypatch.setattr(mod.ak, "fund_etf_scale_sse",
+                        lambda d: pd.DataFrame([{"基金代码": "510300"}]))
+    with pytest.raises(ValueError):
+        sse_env.fetch("2026-09-30")
+
+def test_nan_name_normalized_to_empty(sse_env, monkeypatch):
+    # 列存在但值为 NaN 时 raw.name 归一为空串，而非 "nan"/"<NA>"
+    import backend.fetchers.akshare_sse_etf as mod
+    monkeypatch.setattr(mod.ak, "fund_etf_scale_sse", lambda d: pd.DataFrame(
+        [{"基金代码": "510300", "基金简称": float("nan"), "基金份额": 24119590000}]))
+    (obs,) = sse_env.fetch("2026-09-30")
+    assert obs.raw == {"name": ""}

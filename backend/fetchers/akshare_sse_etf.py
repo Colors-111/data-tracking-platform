@@ -3,6 +3,7 @@
    Task 4 实测列：['序号','基金代码','基金简称','ETF类型','统计日期','基金份额']；
    基金份额单位为"份"，入库统一亿份（÷1e8）。"""
 import akshare as ak
+import pandas as pd
 from .base import Observation, register
 
 CODE_CANDIDATES = ["基金代码", "证券代码", "代码"]
@@ -34,8 +35,9 @@ class SseEtfScaleFetcher:
         for _, r in df.iterrows():
             code = str(r[c_code]).zfill(6)
             if code in self.targets:
+                name = r.get("基金简称")  # 列缺失→None；NaN/pd.NA 由 pd.isna 统一命中，归一空串
                 out.append(Observation(
                     self.targets[code], "share", trade_date,
                     float(r[c_share]) / 1e8,   # 份 → 亿份
-                    {"name": str(r.get("基金简称", ""))}))
+                    {"name": "" if pd.isna(name) else str(name)}))
         return out
