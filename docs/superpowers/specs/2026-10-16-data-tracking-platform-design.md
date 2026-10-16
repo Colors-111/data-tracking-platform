@@ -70,7 +70,7 @@ CREATE TABLE sources (
   fetcher       TEXT NOT NULL,           -- 'akshare.sse_etf_scale'（注册表键）
   unit          TEXT,                    -- '亿份' | '元/吨' | '吨'
   movement_th   REAL,                    -- 异动阈值（环比 %，如 1.0）
-  lag_days      INTEGER DEFAULT 0,       -- 数据发布滞后（T+1 源=1）；采集目标日=交易日-lag_days
+  lag_days      INTEGER DEFAULT 0,       -- 数据发布滞后（T+1 源=1）；采集目标日=run_date 之前第 lag_days 个交易日（非日历日）
   enabled       INTEGER DEFAULT 1,
   sort_order    INTEGER
 );

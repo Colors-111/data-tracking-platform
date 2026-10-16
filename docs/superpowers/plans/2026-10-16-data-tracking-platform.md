@@ -661,6 +661,11 @@ def _run(conn, src_id="fake", **kw):
     insts = conn.execute("SELECT * FROM instruments WHERE source_id=?", (src_id,)).fetchall()
     return C.run_source(conn, src, insts, "2026-10-16", **kw)
 
+@pytest.fixture(autouse=True)
+def _no_calendar(monkeypatch):
+    """单元测试不触网：交易日历强制走工作日降级；需要真实日历的测试可在用例内覆盖"""
+    monkeypatch.setattr(C, "_trade_days", lambda: None)
+
 def test_run_source_ok_and_idempotent(conn, fake_source):
     r1 = _run(conn)
     assert r1["status"] == "ok" and r1["rows"] == 1
@@ -698,7 +703,50 @@ def test_target_date_respects_lag(conn, fake_source, monkeypatch):
             return [Observation("f1", "price", trade_date, 1.0)]
     conn.execute("UPDATE sources SET fetcher='fake.lag' WHERE id='fake'"); conn.commit()
     _run(conn)
-    assert seen["d"] == "2026-10-15"   # lag_days=1 → 采集目标日=交易日-1
+    assert seen["d"] == "2026-10-15"   # 2026-10-16 为周五，降级取前 1 个工作日=周四
+
+def test_previous_trade_date_calendar(monkeypatch):
+    days = ("2026-10-13", "2026-10-14", "2026-10-15", "2026-10-16")
+    monkeypatch.setattr(C, "_trade_days", lambda: days)   # 覆盖 autouse 的降级
+    assert C.previous_trade_date("2026-10-17", 1) == "2026-10-16"  # 周六→周五
+    assert C.previous_trade_date("2026-10-16", 2) == "2026-10-14"  # 前第 2 个交易日
+    assert C.previous_trade_date("2026-10-13", 1) == "2026-10-13"  # 边界钳制到首个
+
+def test_previous_trade_date_fallback_skips_weekend():
+    assert C.previous_trade_date("2026-10-12", 1) == "2026-10-09"  # 周一→上周五（autouse 降级）
+
+def test_backfill_break_on_failure_and_resume(conn, fake_source, monkeypatch):
+    # main() 自己 connect()——替换为测试 fixture 的连接，断言才能看到写入
+    monkeypatch.setattr(C, "connect", lambda: conn)
+    monkeypatch.setattr(C, "trade_dates_from_to",
+                        lambda a, b: ["2026-01-05", "2026-01-06", "2026-01-07"])
+
+    @register("fake.flaky")
+    class Flaky:
+        source_id = "fake"; lag_days = 1
+        def __init__(self, source, instruments): pass
+        def fetch(self, trade_date):
+            if trade_date == "2026-01-06":   # 目标日=第2天时失败
+                raise RuntimeError("半路炸")
+            return [Observation("f1", "price", trade_date, 42.0)]
+
+    conn.execute("UPDATE sources SET fetcher='fake.flaky' WHERE id='fake'"); conn.commit()
+    rc = C.main(["--backfill", "--from", "2026-01-05", "--to", "2026-01-07",
+                 "--source", "fake"])
+    assert rc == 1                                    # 有失败 → 非零退出
+    statuses = conn.execute(
+        "SELECT trade_date, status FROM job_runs ORDER BY id").fetchall()
+    assert [(r["trade_date"], r["status"]) for r in statuses] == [
+        ("2026-01-05", "ok"), ("2026-01-06", "failed")]   # 第3天未执行（break）
+
+    # 修复后续跑：整段补齐
+    conn.execute("UPDATE sources SET fetcher='fake.ok' WHERE id='fake'"); conn.commit()
+    rc = C.main(["--backfill", "--from", "2026-01-05", "--to", "2026-01-07",
+                 "--source", "fake"])
+    assert rc == 0
+    targets = {r["trade_date"] for r in conn.execute(
+        "SELECT DISTINCT trade_date FROM observations")}
+    assert targets == {"2026-01-02", "2026-01-05", "2026-01-06"}  # 断点续跑补齐
 ```
 
 - [ ] **Step 2: 运行确认失败**
@@ -709,9 +757,13 @@ Expected: FAIL（`backend.collect` 不存在）
 - [ ] **Step 3: 写 backend/collect.py**
 
 ```python
-"""采集入口：uv run python -m backend.collect [--backfill --from D --to D --source ID]"""
+"""采集入口：uv run python -m backend.collect [--backfill --from D --to D --source ID]
+   目标日语义：run_date 之前第 lag_days 个【交易日】（日历日减法会在周一/节假日后
+   指向非交易日，上交所按日快照接口只认交易日——周五快照将永久缺失）。"""
 import argparse
+import bisect
 import datetime as dt
+import functools
 import json
 import logging
 import sys
@@ -746,13 +798,50 @@ def source_max_date(conn, source_id):
         (source_id,)).fetchone()
     return r["m"]
 
+@functools.lru_cache(maxsize=1)
+def _trade_days():
+    """交易日历（升序 'YYYY-MM-DD' 元组，进程内缓存）；失败返回 None。"""
+    try:
+        import akshare as ak
+        df = ak.tool_trade_date_hist_sina()
+        days = {str(d) for d in df["trade_date"].astype(str)}
+        days = {d if "-" in d else f"{d[:4]}-{d[4:6]}-{d[6:]}" for d in days}
+        return tuple(sorted(days))
+    except Exception:
+        return None
+
+def previous_trade_date(run_date: str, n: int = 1) -> str:
+    """run_date 之前第 n 个交易日（lag_days 语义）；日历不可用降级为第 n 个工作日。"""
+    days = _trade_days()
+    if not days:
+        d = dt.date.fromisoformat(run_date)
+        for _ in range(n):
+            d -= dt.timedelta(days=1)
+            while d.weekday() >= 5:
+                d -= dt.timedelta(days=1)
+        return d.isoformat()
+    i = max(bisect.bisect_left(days, run_date) - n, 0)
+    return days[i]
+
+def trade_dates_from_to(d_from: str, d_to: str) -> list[str]:
+    """[d_from, d_to] 内的交易日（升序）；日历失败降级为工作日。"""
+    days = _trade_days()
+    if days is None:
+        log.warning("交易日历获取失败，降级为工作日")
+        out, cur = [], dt.date.fromisoformat(d_from)
+        while cur <= dt.date.fromisoformat(d_to):
+            if cur.weekday() < 5:
+                out.append(cur.isoformat())
+            cur += dt.timedelta(days=1)
+        return out
+    return list(days[bisect.bisect_left(days, d_from):bisect.bisect_right(days, d_to)])
+
 def run_source(conn, source, instruments, run_date: str) -> dict:
     started = dt.datetime.now().isoformat(timespec="seconds")
     result = {"source_id": source["id"], "rows": 0, "status": "ok", "error": None}
     try:
         fetcher = build_fetcher(source["fetcher"], source, instruments)
-        target = (dt.date.fromisoformat(run_date)
-                  - dt.timedelta(days=fetcher.lag_days)).isoformat()
+        target = previous_trade_date(run_date, fetcher.lag_days)
         obs = fetch_with_retry(fetcher, target)
         upsert_observations(conn, obs, started)
         result["rows"] = len(obs)
@@ -771,27 +860,6 @@ def run_source(conn, source, instruments, run_date: str) -> dict:
          result["error"], started, dt.datetime.now().isoformat(timespec="seconds")))
     conn.commit()
     return result
-
-def trade_dates_from_to(d_from: str, d_to: str) -> list[str]:
-    """交易日历（akshare）；失败降级为工作日，并发 warning。"""
-    try:
-        import akshare as ak
-        df = ak.tool_trade_date_hist_sina()
-        days = {str(d) for d in df["trade_date"].astype(str)}
-        out, cur = [], dt.date.fromisoformat(d_from)
-        while cur <= dt.date.fromisoformat(d_to):
-            if cur.isoformat() in days or cur.strftime("%Y%m%d") in days:
-                out.append(cur.isoformat())
-            cur += dt.timedelta(days=1)
-        return out
-    except Exception:
-        log.warning("交易日历获取失败，降级为工作日")
-        out, cur = [], dt.date.fromisoformat(d_from)
-        while cur <= dt.date.fromisoformat(d_to):
-            if cur.weekday() < 5:
-                out.append(cur.isoformat())
-            cur += dt.timedelta(days=1)
-        return out
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
@@ -812,32 +880,50 @@ def main(argv=None):
                            params).fetchall()
 
     if args.backfill:
+        if not args.d_from:
+            ap.error("--backfill 需要 --from 起始日期")
         dates = trade_dates_from_to(args.d_from, args.d_to)
+        if not dates:
+            log.error("区间内无交易日：%s ~ %s", args.d_from, args.d_to)
+            conn.close()
+            return 1
         log.info("回补 %s ~ %s，共 %d 个交易日", args.d_from, args.d_to, len(dates))
+        failed = []
         for s in sources:
-            have = source_max_date(conn, s["id"])
-            todo = [d for d in dates if not have or d > have]  # 断点续跑
-            for d in todo:
+            for d in dates:
+                # 已有数据则跳过：精确日期源逐日推进；窗口型源（如库存，fetch
+                # 忽略日期返回整段近60日）首日抓完即整段跳过，避免数千次重复抓取
+                if (h := source_max_date(conn, s["id"])) and d <= h:
+                    continue
                 insts = conn.execute(
                     "SELECT * FROM instruments WHERE source_id=? ORDER BY sort_order",
                     (s["id"],)).fetchall()
-                run_source(conn, s, insts, d)
-    else:
-        results = []
-        for s in sources:
-            insts = conn.execute(
-                "SELECT * FROM instruments WHERE source_id=? ORDER BY sort_order",
-                (s["id"],)).fetchall()
-            results.append(run_source(conn, s, insts, args.date))
-        from .notify import send_summary  # 延迟导入（notify 随 Task 8 落地后可上移到模块顶部）
-        send_summary(results)
-        bad = [r for r in results if r["status"] != "ok"]
-        log.info("完成：%d 源，%d 异常", len(results), len(bad))
+                r = run_source(conn, s, insts, d)
+                if r["status"] == "failed":
+                    failed.append((s["id"], d))
+                    break   # 断点续跑：保留现场，下次回补从该日重试
+        if failed:
+            log.error("回补存在失败源/日期：%s（修复后重跑 --backfill 即续传）", failed)
+            conn.close()
+            return 1
         conn.close()
-        return 1 if bad else 0
+        return 0
 
+    results = []
+    for s in sources:
+        insts = conn.execute(
+            "SELECT * FROM instruments WHERE source_id=? ORDER BY sort_order",
+            (s["id"],)).fetchall()
+        results.append(run_source(conn, s, insts, args.date))
+    from .notify import send_summary  # 延迟导入（notify 随 Task 8 落地后可上移到模块顶部）
+    send_summary(results)
+    bad = [r for r in results if r["status"] == "failed"]
+    # 仅 failed 非零退出（触发 systemd OnFailure 崩溃告警）；
+    # empty/stale 属数据质量事件，经 job_runs 与 Task 8 的汇总 webhook 报告，不算崩溃
+    log.info("完成：%d 源，failed=%d empty/stale=%d", len(results), len(bad),
+             sum(1 for r in results if r["status"] in ("empty", "stale")))
     conn.close()
-    return 0
+    return 1 if bad else 0
 
 if __name__ == "__main__":
     sys.exit(main())
@@ -846,7 +932,7 @@ if __name__ == "__main__":
 - [ ] **Step 4: 运行确认通过**
 
 Run: `uv run pytest backend/tests/test_collect.py -v`
-Expected: 4 passed
+Expected: 7 passed（4 基础 + 目标日/日历/回补 3 个新测试）
 
 - [ ] **Step 5: Commit**
 
