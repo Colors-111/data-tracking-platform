@@ -153,6 +153,19 @@ class Fetcher(Protocol):
 
 批次剩余（按 PRD 5.2）：两融 `macro_china_market_margin_sh/sz` + `stock_margin_sse/szse`；商品价格 `futures_spot_price`；上期所/广期所仓单；黄金储备 `macro_china_foreign_exchange_gold`；SCFI 轻爬虫；水文（最难，最后）。新源选样原则：**每类取规模最大的几只 ETF 反映市场情况**（两所接口实测份额排序）。
 
+### 5.2 v1.2 商品组源（2026-10-16 立项，用户确认"全接现成指标"）
+
+**信息架构变更**：每个商品一个 source（"商品组源"），内含多个不同 metric 的 instruments；详情页按指标分区（价格区/库存仓单区/资金区/特有区），跨指标可归一化对比。交易所侧重按品种定价权分布：铜三所（LME 锚）+ 铝双所（SHFE+LME）+ 氧化铝纯 SHFE + 黄金 COMEX/SGE/SHFE（无 LME）。
+
+| 商品组源 | instruments（metric/unit） | akshare 接口（均已实测） |
+|----------|---------------------------|--------------------------|
+| `copper` 铜 | SHFE沪铜价(price/元/吨)、现货铜价(price)、SHFE库存(inventory/吨，**迁移现有 cu-inventory**)、SHFE仓单(warehouse/吨)、LME库存(inventory)、LME注册仓单+注销仓单(warehouse)、LME净持仓(positioning/张)、CFTC非商业净多(positioning/手) | `futures_zh_daily_sina('CU0')`、`futures_spot_price`、`futures_inventory_em('cu')`、`futures_shfe_warehouse_receipt`、`macro_euro_lme_stock`（2718天全历史，注意尾部滞后）、`macro_euro_lme_holding`、`macro_usa_cftc_nc_holding` |
+| `aluminum` 铝 | SHFE沪铝价、现货铝价、东财铝库存、SHFE仓单、LME库存/仓单/净持仓 | 同上（AL/AL0/'al'/'铝'） |
+| `alumina` 氧化铝 | SHFE氧化铝价、现货价、东财库存、SHFE仓库+厂库仓单 | 同上（AO/AO0/'ao'/'氧化铝仓库/厂库'）；纯国内品种无 LME/COMEX |
+| `gold` 黄金 | SHFE沪金价(price/元/克)、SGE现货价(price,实现时实测)、SHFE仓单(warehouse/千克)、央行储备(reserve/万盎司,**月频**)、国内黄金ETF持仓(holding/亿份,518880/518800/518660 复用 etf_scale)、CFTC非商业净多(positioning) | `futures_zh_daily_sina('AU0')`、`spot_hist_sge`、`futures_shfe_warehouse_receipt`、`macro_china_foreign_exchange_gold`、etf 接口、CFTC |
+
+后续爬虫批（不在本轮）：LME 价格、COMEX 库存、SMM 社会库存、TC/RC 加工费、上海溢价、SPDR GLD。schema 变更：**instruments 加 `unit` 列**（混合单位源按品种显示）；异动榜天然兼容（按 instrument 环比）；月频数据与日频同图（TrendChart connectNulls）。
+
 ## 6. 采集管道
 
 `backend/collect.py` 执行流程：
