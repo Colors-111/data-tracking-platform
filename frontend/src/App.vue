@@ -1,8 +1,17 @@
 <script setup>
 import { ref, onMounted } from "vue";
 import { api } from "./api";
+// 约定：视图内各自 catch fetch 错误 → 主区用 .banner 展示；侧边栏失败只影响导航不影响页面
 const groups = ref([]);
-onMounted(async () => { groups.value = await api.sources(); });
+const loadError = ref(false);
+onMounted(async () => {
+  try {
+    groups.value = await api.sources();
+    loadError.value = false;
+  } catch {
+    loadError.value = true;
+  }
+});
 </script>
 
 <template>
@@ -17,6 +26,7 @@ onMounted(async () => { groups.value = await api.sources(); });
             <span class="dot" />{{ s.name }}
           </RouterLink>
         </div>
+        <div v-if="loadError" class="side-error">⚠ 数据源加载失败</div>
       </nav>
     </aside>
     <main class="main"><RouterView /></main>
@@ -24,7 +34,7 @@ onMounted(async () => { groups.value = await api.sources(); });
 </template>
 
 <style>
-:root { --up:#e74c3c; --down:#27ae60; --sidebar:#1e2430; --sidebar-active:#c0392b; }
+:root { --up:#e74c3c; --down:#27ae60; --flat:#95a5a6; --sidebar:#1e2430; --sidebar-active:#c0392b; }
 * { box-sizing: border-box; }
 body { margin: 0; font-family: system-ui, "PingFang SC", "Microsoft YaHei", sans-serif; background:#f5f6f8; }
 .layout { display: flex; min-height: 100vh; }
@@ -37,8 +47,9 @@ body { margin: 0; font-family: system-ui, "PingFang SC", "Microsoft YaHei", sans
 .nav-item.overview { margin-bottom: 6px; }
 .dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:#3a4a5f; margin-right:7px; }
 .main { flex:1; padding: 18px; }
-.up { color: var(--up); } .down { color: var(--down); } .flat { color: #95a5a6; }
+.up { color: var(--up); } .down { color: var(--down); } .flat { color: var(--flat); }
 .card { background:#fff; border-radius:8px; padding:14px 16px; }
-.banner { background:#c0392b; color:#fff; padding:12px 18px; border-radius:8px; font-weight:700; }
+.banner { background: var(--sidebar-active); color:#fff; padding:12px 18px; border-radius:8px; font-weight:700; }
+.side-error { color:#7a8290; font-size:11px; padding:7px 10px; }
 .badge { background:rgba(255,255,255,.25); border-radius:10px; padding:2px 10px; font-size:12px; font-weight:400; margin-left:8px; }
 </style>

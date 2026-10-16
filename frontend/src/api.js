@@ -1,4 +1,4 @@
-const j = (r) => { if (!r.ok) throw new Error(`${r.status}`); return r.json(); };
+const j = (r) => { if (!r.ok) throw new Error(`${r.status} ${r.url}`); return r.json(); };
 
 export const api = {
   sources: () => fetch("/api/sources").then(j),

@@ -1,3 +1,4 @@
+// UP/DOWN/FLAT 与 App.vue :root 保持同步（canvas 取不到 CSS 变量）
 export const UP = "#e74c3c", DOWN = "#27ae60", FLAT = "#95a5a6";
 
 export function pctColor(pct) {
