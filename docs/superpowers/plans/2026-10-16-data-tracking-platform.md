@@ -388,11 +388,13 @@ def sse_env(conn, monkeypatch):
     insts = conn.execute(
         "SELECT * FROM instruments WHERE source_id='hs300-etf' ORDER BY sort_order"
     ).fetchall()
-    df = pd.read_json(FIX) if FIX.exists() else pd.DataFrame([
-        # 手工兜底样本（列名以 Task 4 实测为准，二选一候选）
-        {"基金代码": "510300", "基金简称": "沪深300ETF", "基金份额(亿份)": 254.85},
-        {"基金代码": "510310", "基金简称": "沪深300ETF易方达", "基金份额(亿份)": 167.26},
-    ])
+    # 真实列名（Task 4 实测）：['序号','基金代码','基金简称','ETF类型','统计日期','基金份额']
+    # 基金份额单位是"份"；to_json 会把代码列写成数字，read_json 必须显式 dtype=str
+    df = (pd.read_json(FIX, dtype={"基金代码": str}) if FIX.exists()
+          else pd.DataFrame([
+              {"基金代码": "510300", "基金简称": "300ETF", "基金份额": 24119590000},
+              {"基金代码": "510310", "基金简称": "沪深300ETF易方达", "基金份额": 16726000000},
+          ]))
     import backend.fetchers.akshare_sse_etf as mod
     monkeypatch.setattr(mod.ak, "fund_etf_scale_sse", lambda d: df)
     return build_fetcher(src["fetcher"], src, insts)
@@ -403,10 +405,11 @@ def test_fetch_filters_target_codes(sse_env):
     assert {"510300", "510310"} <= ids and len(ids) == 5
     assert all(o.metric == "share" and o.trade_date == "2026-09-30" for o in obs)
 
-def test_fetch_values_are_numbers(sse_env):
+def test_fetch_converts_to_yi(sse_env):
+    # 接口返回"份"（510300≈2.41e10 份），入库统一亿份
     obs = sse_env.fetch("2026-09-30")
     by_id = {o.instrument_id: o for o in obs}
-    assert by_id["510300"].value is not None and by_id["510300"].value > 0
+    assert by_id["510300"].value == pytest.approx(241.1959, abs=0.01)
 
 def test_lag_days_is_one(sse_env):
     assert sse_env.lag_days == 1
@@ -421,12 +424,14 @@ Expected: FAIL（模块不存在）
 
 ```python
 """上交所 ETF 份额：fund_etf_scale_sse(date) 返回当日全所 ETF 快照，历史可回溯 2015。
-   T+1 公布 → lag_days=1。列名以 fixtures/sse_etf_scale.json 实测为准（多候选兼容）。"""
+   T+1 公布 → lag_days=1。
+   Task 4 实测列：['序号','基金代码','基金简称','ETF类型','统计日期','基金份额']；
+   基金份额单位为"份"，入库统一亿份（÷1e8）。"""
 import akshare as ak
 from .base import Observation, register
 
 CODE_CANDIDATES = ["基金代码", "证券代码", "代码"]
-SHARE_CANDIDATES = ["基金份额(亿份)", "基金份额", "份额合计(亿份)", "份额"]
+SHARE_CANDIDATES = ["基金份额", "基金份额(亿份)", "份额合计(亿份)", "份额"]
 
 def _col(df, candidates, what):
     for c in candidates:
@@ -456,7 +461,8 @@ class SseEtfScaleFetcher:
             if code in self.targets:
                 out.append(Observation(
                     self.targets[code], "share", trade_date,
-                    float(r[c_share]), {"name": str(r.get("基金简称", ""))}))
+                    float(r[c_share]) / 1e8,   # 份 → 亿份
+                    {"name": str(r.get("基金简称", ""))}))
         return out
 ```
 
@@ -532,7 +538,11 @@ Expected: FAIL（模块不存在）
 
 ```python
 """电解铜库存：futures_inventory_em(symbol='cu') 东财口径，返回近约 60 个交易日全量。
-   关键约束：每次抓取把整个返回区间全部 upsert（接口只保留 60 日，历史须自建累积）。"""
+   关键约束：每次抓取把整个返回区间全部 upsert（接口只保留 60 日，历史须自建累积）。
+   Task 4 实测列：['日期','库存','增减']；fixture 中日期经 to_json 为 epoch-ms int，
+   真实接口可能返回字符串/Timestamp——三种形态都要归一成 'YYYY-MM-DD'。"""
+import datetime as dt
+
 import akshare as ak
 from .base import Observation, register
 
@@ -544,6 +554,11 @@ def _col(df, candidates, what):
         if c in df.columns:
             return c
     raise ValueError(f"未找到{what}列，实际列: {list(df.columns)}")
+
+def _norm_date(v) -> str:
+    if isinstance(v, (int, float)):   # epoch-ms（fixture 经 to_json 的形态）
+        return dt.datetime.fromtimestamp(v / 1000, tz=dt.timezone.utc).strftime("%Y-%m-%d")
+    return str(v)[:10].replace("/", "-")   # '2026-07-07' / '2026/07/07' / Timestamp
 
 @register("akshare.futures_inventory_em")
 class FuturesInventoryFetcher:
@@ -563,11 +578,10 @@ class FuturesInventoryFetcher:
                 continue
             c_d, c_v = _col(df, DATE_CANDIDATES, "日期"), _col(df, VAL_CANDIDATES, "库存")
             for _, r in df.iterrows():
-                d = str(r[c_d])[:10].replace("/", "-")
                 v = r[c_v]
                 if v is None or pd_isna(v):
                     continue
-                out.append(Observation(iid, "inventory", d, float(v)))
+                out.append(Observation(iid, "inventory", _norm_date(r[c_d]), float(v)))
         return out
 
 def pd_isna(v):
