@@ -1,14 +1,18 @@
 """宏观全历史型 fetcher 单测（v1.2 Task C）——fixture 回放，离线。
    覆盖：LME 库存/仓单（akshare.lme_stock）、LME 净持仓（akshare.lme_holding）、
-   CFTC 商品非商业净多（akshare.cftc_nc）、央行黄金储备（akshare.gold_reserve）。
+   CFTC 商品非商业净多（akshare.cftc_nc）、央行黄金储备（akshare.gold_reserve），
+   以及 v1.2 增量的现货子 fetcher：SGE 黄金现货（SgeSpotFetcher）、
+   伦敦金现（LondonSpotFetcher，新浪外盘日K）。
    共同语义：全历史型——fetch 忽略 trade_date 返回接口全量观测，幂等 upsert；
    backfill 首日全量入库后 covered=True 自然续跑。
    instrument code 约定（与 Task A seed 对齐，id=code 同名，fetcher 只消费 id/code）：
-   LME-{CU|AL}-{STOCK|WARRANT|POS}、CFTC-AU、GOLD-RESERVE。
+   LME-{CU|AL}-{STOCK|WARRANT|POS}、CFTC-AU、GOLD-RESERVE；现货两子类不注册，
+   composite（编排增量）按 code 'AU9999'/'XAU' import 委托。
    实测注记（2026-10-16）：任务书预期 macro_usa_cftc_nc_holding 实为【外汇】非商业
    （无商品列）；商品非商业在 macro_usa_cftc_c_holding，且四接口均无铜品种——
    CFTC-CU 无法由 akshare 供给，fetcher 对其构建期 fail-loud（见对应测试）。"""
 import calendar
+import datetime as dt
 import types
 from collections import Counter
 from pathlib import Path
@@ -17,6 +21,7 @@ import pandas as pd
 import pytest
 
 import backend.fetchers  # noqa: F401 触发注册
+from backend.fetchers.akshare_macro import LondonSpotFetcher, SgeSpotFetcher
 from backend.fetchers.base import build_fetcher
 
 FIX = Path(__file__).parent / "fixtures"
@@ -66,10 +71,10 @@ def by_key(obs):
     return {(o.instrument_id, o.trade_date): o.value for o in obs}
 
 
-def fixture_kv(df, col, iid):
+def fixture_kv(df, col, iid, date_col="日期"):
     """fixture 列 -> {(iid, 'YYYY-MM-DD'): value}（NaN 行不产观测，与 fetcher 同约定）。"""
     return {(iid, str(d)[:10]): float(v)
-            for d, v in zip(df["日期"], df[col]) if pd.notna(v)}
+            for d, v in zip(df[date_col], df[col]) if pd.notna(v)}
 
 
 # ---------- LME 库存/仓单（akshare.lme_stock） ----------
@@ -222,3 +227,119 @@ def test_missing_column_raises(monkeypatch, name, insts, fn, df, drop):
              **{fn: lambda: df.drop(columns=[drop])})
     with pytest.raises(ValueError):
         f.fetch("2026-10-16")
+
+
+# ---------- 现货子 fetcher（v1.2 增量：不注册，供 composite 按 code 委托） ----------
+# composite（编排增量）import 两类按仪器 code 分流：'AU9999'→SgeSpotFetcher、
+# 'XAU'→LondonSpotFetcher；本节锁定两类可直接 (source, instruments) 构造、
+# 全历史语义与 _WideTableFetcher 一致（全量返回/幂等 upsert/构建期 fail-loud）。
+# fixture 实测记录见 gen_macro_fixtures.py：SGE=spot_hist_sge('Au99.99') 真实样本
+# （date 为 datetime.date 对象）；伦敦金=新浪 futures_foreign_hist('XAU') 真实样本
+# （东财 forex 系接口无贵金属品种，路线结论同文件头注记）。
+
+SGE = pd.read_json(FIX / "macro_sge_spot.json")
+LONDON = pd.read_json(FIX / "macro_london_gold.json")
+
+SGE_INSTS = [{"id": "au-sge-price", "code": "AU9999", "metric": "price"}]
+LONDON_INSTS = [{"id": "au-london-price", "code": "XAU", "metric": "price"}]
+
+# (类, instruments, akshare 接口名, 回放 fixture)
+SPOT_CASES = [
+    (SgeSpotFetcher, SGE_INSTS, "spot_hist_sge", SGE),
+    (LondonSpotFetcher, LONDON_INSTS, "futures_foreign_hist", LONDON),
+]
+
+
+def make_spot(cls, monkeypatch, insts, **fns):
+    """直接构造未注册子 fetcher（composite 委托契约），akshare 桩同 make()。"""
+    import backend.fetchers.akshare_macro as mod
+    monkeypatch.setattr(mod, "ak", types.SimpleNamespace(**fns))
+    return cls({"id": "test-src"}, insts)
+
+
+@pytest.mark.parametrize("cls,insts,fn,df", SPOT_CASES, ids=["sge", "london"])
+def test_spot_full_history(monkeypatch, cls, insts, fn, df):
+    f = make_spot(cls, monkeypatch, insts, **{fn: lambda symbol: df})
+    obs = f.fetch("2026-10-16")
+    iid = insts[0]["id"]
+    assert by_key(obs) == fixture_kv(df, "close", iid, date_col="date")  # 全量行级对账
+    assert len(obs) == len(by_key(obs))     # 单序列每日期恰一观测，无重复
+    assert all(o.metric == "price" for o in obs)
+    assert min(o.trade_date for o in obs) == min(str(d)[:10] for d in df["date"])
+
+
+@pytest.mark.parametrize("cls,insts,fn,df", SPOT_CASES, ids=["sge", "london"])
+def test_spot_ignores_trade_date(monkeypatch, cls, insts, fn, df):
+    # 全历史型：传任意日期返回相同全量（幂等 upsert 的前提）
+    f = make_spot(cls, monkeypatch, insts, **{fn: lambda symbol: df})
+    assert f.fetch("2000-01-01") == f.fetch("2026-10-16")
+
+
+@pytest.mark.parametrize("cls,insts,fn,_df", SPOT_CASES, ids=["sge", "london"])
+def test_spot_empty_returns_empty(monkeypatch, cls, insts, fn, _df):
+    # 生产路径：接口波动返回 None/空表 → []（由 collect 判 empty 告警，fetch 不炸）
+    for empty in (None, pd.DataFrame()):
+        f = make_spot(cls, monkeypatch, insts, **{fn: lambda symbol: empty})
+        assert f.fetch("2026-10-16") == []
+
+
+@pytest.mark.parametrize("cls,insts,fn,df", SPOT_CASES, ids=["sge", "london"])
+def test_spot_missing_column_raises(monkeypatch, cls, insts, fn, df):
+    # 缺 close 列 fail-loud——接口字段改名在此暴露
+    f = make_spot(cls, monkeypatch, insts,
+                  **{fn: lambda symbol: df.drop(columns=["close"])})
+    with pytest.raises(ValueError):
+        f.fetch("2026-10-16")
+
+
+@pytest.mark.parametrize("cls,insts,fn,_df", SPOT_CASES, ids=["sge", "london"])
+def test_spot_nan_rows_skipped(monkeypatch, cls, insts, fn, _df):
+    # NaN 收盘价 / NaT 日期行不产观测也不报错（同 _WideTableFetcher 约定）
+    df = pd.DataFrame([
+        {"date": pd.Timestamp("2026-10-15"), "close": 899.0},
+        {"date": pd.Timestamp("2026-10-16"), "close": float("nan")},
+        {"date": pd.NaT, "close": 900.0},
+    ])
+    f = make_spot(cls, monkeypatch, insts, **{fn: lambda symbol: df})
+    assert by_key(f.fetch("2026-10-16")) == {(insts[0]["id"], "2026-10-15"): 899.0}
+
+
+def test_sge_spot_date_objects_normalized(monkeypatch):
+    # 生产真实形态：spot_hist_sge 的 date 列是 datetime.date 对象（fixture 经 to_json/
+    # read_json 往返后为 Timestamp）——date 对象同样须归一为 'YYYY-MM-DD'
+    df = pd.DataFrame([{"date": dt.date(2026, 10, 16), "close": 901.57}])
+    f = make_spot(SgeSpotFetcher, monkeypatch, SGE_INSTS,
+                  spot_hist_sge=lambda symbol: df)
+    obs = f.fetch("2026-10-16")
+    assert len(obs) == 1
+    assert (obs[0].trade_date, obs[0].value) == ("2026-10-16", 901.57)
+
+
+def test_sge_spot_stub_called_with_real_symbol(monkeypatch):
+    # 桩捕获 symbol：code 'AU9999' 须映射为接口 symbol 'Au99.99'（映射错即空抓）
+    seen = {}
+
+    def stub(symbol):
+        seen["symbol"] = symbol
+        return SGE
+
+    f = make_spot(SgeSpotFetcher, monkeypatch, SGE_INSTS, spot_hist_sge=stub)
+    assert len(f.fetch("2026-10-16")) > 0
+    assert seen["symbol"] == "Au99.99"
+
+
+@pytest.mark.parametrize("cls,bad", [
+    (SgeSpotFetcher, "AU-LOCO"),
+    (LondonSpotFetcher, "XAG"),
+], ids=["sge", "london"])
+def test_spot_unknown_code_fails_loud(cls, bad):
+    # seed 拼错 code 在构建期暴露（fail-loud），而非静默丢数据
+    with pytest.raises(ValueError, match=bad):
+        cls({"id": "test-src"}, [{"id": "x", "code": bad}])
+
+
+def test_spot_fetchers_not_registered():
+    # composite 委托契约：两子类只 import 构造、不占注册表——gold 源在 collect 的
+    # 唯一入口是 akshare.composite，若误 @register 会形成第二个可配入口
+    import backend.fetchers.base as base_mod
+    assert not {SgeSpotFetcher, LondonSpotFetcher} & set(base_mod._REGISTRY.values())

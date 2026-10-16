@@ -30,7 +30,16 @@
    - cftc_nc=10：周二日期周频，10 个交易日使周一~周五例行目标日恒 ≤ 最新报告日，
      免除周中假 stale；报告缺发/迟发逾一周才如实报 stale；
    - gold_reserve=28：月末锚定月频、次月约 7 日发布，28 个交易日覆盖发布间隔，
-     月读数迟逾约一周才报 stale。"""
+     月读数迟逾约一周才报 stale。
+
+   v1.2 增量（2026-10-16）：SGE 黄金现货（spot_hist_sge('Au99.99')，元/克）与
+   伦敦金现（新浪外盘日K futures_foreign_hist('XAU')，美元/盎司）两个全历史
+   单序列子 fetcher（SgeSpotFetcher/LondonSpotFetcher），【不注册】——composite
+   （编排增量）按仪器 code 'AU9999'/'XAU' import 委托。伦敦金不走东财 forex 系：
+   实测 symbol_market_map 仅外汇对（forex_hist_em('XAUUSD') KeyError by design）、
+   forex_spot_em 限流 ConnectionError、裸 kline secid 119.XAU/120.XAU 返回 0 根。
+   两类与 _WideTableFetcher 同约定：全量返回、幂等 upsert、未知 code 构建期
+   fail-loud；fixture 实测记录见 tests/gen_macro_fixtures.py。"""
 import calendar
 import re
 
@@ -191,3 +200,70 @@ class GoldReserveFetcher(_WideTableFetcher):
                     f"gold_reserve 未支持的仪器代码: {code}（约定 GOLD-RESERVE）")
             targets.append((i["id"], "reserve", ["黄金储备"]))
         return targets
+
+
+# ---------- 现货子 fetcher（不注册，供 composite 按 code 委托） ----------
+# gold 源在 collect 的唯一入口是 akshare.composite；编排增量将 import 下面两类
+# 按仪器 code 分流（'AU9999'→SgeSpotFetcher、'XAU'→LondonSpotFetcher），
+# 故两类只暴露 (source, instruments) 构造契约，不 @register。
+
+class _FullHistSpotFetcher:
+    """全历史单序列现货基类：接口按 symbol 一次返回全历史 OHLC 日K，
+       取 close 列产出 price 观测。子类声明 interface（akshare 接口名）与
+       code_symbols（仪器 code → 接口 symbol 参数）；未知 code 构建期 raise
+       （seed 拼错当场暴露，同 _WideTableFetcher 约定）。fetch 忽略 trade_date
+       全量返回（全历史型，幂等 upsert）；date 列名兼容中英文、值列 close/收盘，
+       NaN 值/日期行跳过。"""
+
+    source_id = "gold"      # 仅协议完备性；未注册类不参与 collect 的 source 查找
+    interface: str
+    code_symbols: dict[str, str]
+    date_cols = ["date", "日期"]
+    value_cols = ["close", "收盘"]
+    lag_days = 1
+
+    def __init__(self, source, instruments):
+        self.source = source
+        self.targets: dict[str, list[str]] = {}   # symbol -> [instrument_id]（声明序）
+        for i in instruments:
+            code = i["code"] or ""
+            if code not in self.code_symbols:
+                raise ValueError(
+                    f"{type(self).__name__} 未支持的仪器代码: {code}"
+                    f"（约定 {'|'.join(self.code_symbols)}）")
+            self.targets.setdefault(self.code_symbols[code], []).append(i["id"])
+
+    def fetch(self, trade_date: str) -> list[Observation]:
+        out = []
+        for symbol, iids in self.targets.items():
+            df = getattr(ak, self.interface)(symbol=symbol)
+            if df is None or df.empty:   # 空表短路：接口波动须返回 [] 而非报错
+                continue
+            c_d = col(df, self.date_cols, "日期")
+            c_v = col(df, self.value_cols, "收盘")
+            for _, r in df.iterrows():
+                d = normalize_date(r[c_d])
+                if d is None:            # 日期缺失行跳过（NaN/NaT），不崩整个抓取
+                    continue
+                v = r[c_v]
+                if not pd.isna(v):
+                    for iid in iids:
+                        out.append(Observation(iid, "price", d, float(v)))
+        return out
+
+
+class SgeSpotFetcher(_FullHistSpotFetcher):
+    """SGE 黄金现货 Au99.99：AU9999 → close（元/克，日频）。
+       生产 date 列为 datetime.date 对象，normalize_date 兜住（str 兜底分支）。"""
+
+    interface = "spot_hist_sge"
+    code_symbols = {"AU9999": "Au99.99"}
+
+
+class LondonSpotFetcher(_FullHistSpotFetcher):
+    """伦敦金现 XAUUSD：XAU → close（美元/盎司，日频）。
+       东财 forex 系接口无贵金属品种（见模块 docstring 实测注记），走新浪外盘日K
+       futures_foreign_hist。"""
+
+    interface = "futures_foreign_hist"
+    code_symbols = {"XAU": "XAU"}

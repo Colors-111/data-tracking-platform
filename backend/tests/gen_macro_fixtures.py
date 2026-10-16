@@ -11,6 +11,14 @@
      【无铜品种】，铜需直连 CFTC COT 官方报告——此处只录黄金相关列
    - macro_china_foreign_exchange_gold: 420 行月频（1978.12~2026.9），统计时间 'YYYY.M'，
      黄金储备单位万盎司——全量录制
+   - spot_hist_sge(symbol='Au99.99')（v1.2 增量同日补录）：2382 行全历史
+     （2016-12-19~2026-10-16），列 date/open/close/low/high，date 为 datetime.date
+     对象（to_json 落盘 ISO 串、read_json 回读 Timestamp），close 元/克——截尾近 400 行
+   - 伦敦金现：任务书预期的东财路线实测不通——forex_hist_em 的 symbol_market_map 仅含
+     外汇对（无 XAU/XAG，KeyError by design）、forex_spot_em 东财限流 ConnectionError、
+     裸 kline secid 119.XAU/120.XAU 返回 0 根。退路实测新浪外盘日K可用：
+     futures_foreign_hist(symbol='XAU')，5186 行全历史（2006-10-16~2026-10-16），列
+     date/open/high/low/close/volume/position/s，close 美元/盎司——截尾近 400 行
    """
 from pathlib import Path
 
@@ -38,3 +46,9 @@ dump("macro_cftc_nc.json", cftc[gold_cols])
 
 # 央行黄金储备：全量 420 行月频
 dump("macro_gold_reserve.json", ak.macro_china_foreign_exchange_gold())
+
+# v1.2 增量（同日补录）：SGE 黄金现货 + 伦敦金现——供 composite 委托的两个子 fetcher，
+# 路线结论见文件头 docstring（东财不通，伦敦金走新浪 futures_foreign_hist）
+sge = ak.spot_hist_sge(symbol="Au99.99")
+dump("macro_sge_spot.json", sge.tail(400))
+dump("macro_london_gold.json", ak.futures_foreign_hist(symbol="XAU").tail(400))
