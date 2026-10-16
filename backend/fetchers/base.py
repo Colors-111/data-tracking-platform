@@ -23,9 +23,9 @@ _REGISTRY: dict[str, type] = {}
 
 def register(name: str):
     def deco(cls):
+        if name in _REGISTRY:
+            raise ValueError(f"fetcher 重名注册: {name}")
         _REGISTRY[name] = cls
-        if not getattr(cls, "source_id", None):
-            cls.source_id = name.split(".")[-1]
         return cls
     return deco
 

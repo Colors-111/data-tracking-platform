@@ -18,3 +18,17 @@ def test_register_and_build():
     assert isinstance(f, DemoFetcher)
     with pytest.raises(KeyError):
         build_fetcher("nope.missing", src, [])
+
+def test_register_duplicate_raises():
+    @register("fake.dupe")
+    class DupeFetcher(Fetcher):
+        lag_days = 0
+        def fetch(self, trade_date):
+            return []
+
+    with pytest.raises(ValueError):
+        @register("fake.dupe")
+        class DupeFetcherAgain(Fetcher):
+            lag_days = 0
+            def fetch(self, trade_date):
+                return []
