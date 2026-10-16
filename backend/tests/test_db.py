@@ -27,13 +27,14 @@ def test_seed_loaded(conn):
     assert conn.execute(
         "SELECT COUNT(*) c FROM instruments WHERE source_id='csi500-etf'"
     ).fetchone()["c"] == 3
-    # 商品组源抽查：铜 8（含迁入的 cu-inventory）、黄金 8
+    # 商品组源抽查：铜 7（cu-cftc 移除——CFTC 接口无铜品种列，后续直连 COT 立项）、
+    # 黄金 9（含 au-london-price 伦敦金现）
     assert conn.execute(
         "SELECT COUNT(*) c FROM instruments WHERE source_id='copper'"
-    ).fetchone()["c"] == 8
+    ).fetchone()["c"] == 7
     assert conn.execute(
         "SELECT COUNT(*) c FROM instruments WHERE source_id='gold'"
-    ).fetchone()["c"] == 8
+    ).fetchone()["c"] == 9
     assert conn.execute(
         "SELECT lag_days FROM sources WHERE id='hs300-etf'"
     ).fetchone()["lag_days"] == 1

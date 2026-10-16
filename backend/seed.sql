@@ -56,8 +56,7 @@ INSERT OR IGNORE INTO instruments(id,source_id,code,metric,unit,name,sort_order)
  ('cu-warrant','copper','CU-WARRANT','warehouse','吨','SHFE铜仓单',4),
  ('cu-lme-stock','copper','LME-CU-STOCK','inventory','吨','LME铜库存',5),
  ('cu-lme-warrant','copper','LME-CU-WARRANT','warehouse','吨','LME铜注册仓单',6),
- ('cu-lme-holding','copper','LME-CU-POS','positioning','张','LME铜净持仓',7),
- ('cu-cftc','copper','CFTC-CU','positioning','手','CFTC铜非商业净多',8);
+ ('cu-lme-holding','copper','LME-CU-POS','positioning','张','LME铜净持仓',7);
 -- 铝组
 INSERT OR IGNORE INTO instruments(id,source_id,code,metric,unit,name,sort_order) VALUES
  ('al-shfe-price','aluminum','AL0','price','元/吨','SHFE沪铝主力',1),
@@ -82,4 +81,5 @@ INSERT OR IGNORE INTO instruments(id,source_id,code,metric,unit,name,sort_order)
  ('518880','gold','518880','holding','亿份','黄金ETF华安',5),
  ('518800','gold','518800','holding','亿份','黄金基金国泰',6),
  ('518660','gold','518660','holding','亿份','工银黄金',7),
- ('au-cftc','gold','CFTC-AU','positioning','手','CFTC黄金非商业净多',8);
+ ('au-cftc','gold','CFTC-AU','positioning','手','CFTC黄金非商业净多',8),
+ ('au-london-price','gold','XAU','price','美元/盎司','伦敦金现',9);
