@@ -5,7 +5,7 @@ import JobStatus from "../components/JobStatus.vue";
 import CardRow from "../components/CardRow.vue";
 import TrendChart from "../components/TrendChart.vue";
 import CompareChips from "../components/CompareChips.vue";
-import { groupSections, isCommodityMeta } from "../metricSections.js";
+import { groupSections, groupCharts, isCommodityMeta } from "../metricSections.js";
 
 const props = defineProps({ id: String });
 const RANGES = [["1m", "1月"], ["3m", "3月"], ["6m", "6月"], ["1y", "1年"], ["all", "全部"]];
@@ -65,6 +65,22 @@ watch(() => props.id, () => {
 });
 watch([compareIds, normalize], loadCompare);
 
+// 对比源的 instrument_meta（iid→unit）：/api/series 不带单位，而商品对比源的
+// sources.unit='混合' 非真实量纲——逐对比源拉 sourceDetail 取逐 instrument 单位，
+// 供原值模式下对比线按单位落图（归一化合并图不依赖此数据）
+const compareMeta = ref({});
+let mseq = 0;
+watch(compareIds, async (ids) => {
+  const my = ++mseq; // 快速增删对比源时丢弃过期响应
+  if (!ids.length) {
+    compareMeta.value = {};
+    return;
+  }
+  const metas = await Promise.all(
+    ids.map(sid => api.sourceDetail(sid).then(d => d.instrument_meta ?? {}).catch(() => ({}))));
+  if (my === mseq) compareMeta.value = Object.assign({}, ...metas);
+});
+
 const nameOf = (iid) =>
   detail.value?.cards.find(c => c.instrument_id === iid)?.name ?? iid;
 // 统一序列模式：/api/series 数据就位时才生效；失败/未返回时回退 own 原值，
@@ -93,8 +109,8 @@ const compareSectionKey = computed(() => {
 const cardsOf = (sec) =>
   detail.value.cards.filter(c => sec.iids.includes(c.instrument_id));
 
-// 分区序列：统一模式按 instrument_id 归区（own 落各自分区、compare 落对比区）；
-// 原值模式直接取 detail.series 过滤本区（空序列不进图例）
+// 合并图（归一化模式）序列：统一序列按 instrument_id 归区（own 落各自分区、
+// compare 落对比区），归一化后单位消失、区内所有线一张图（Y 轴 %）
 function seriesOf(sec) {
   if (useUnified.value) {
     const ownMeta = detail.value.instrument_meta ?? {};
@@ -108,12 +124,64 @@ function seriesOf(sec) {
     .map(iid => ({ name: nameOf(iid), data: detail.value.series[iid] }));
 }
 
-// 分区 Y 轴单位提示：区内有数据的 instruments 单位一致→该单位；混合单位→"混合"
-// （价格区 元/吨+元/克+美元/盎司 跨单位归一化后才可比）
-function unitOf(sec) {
-  const units = [...new Set(cardsOf(sec).map(c => c.unit).filter(Boolean))];
-  return units.length === 1 ? units[0] : "混合";
+// 线的计价单位：own 线用本源 instrument_meta，对比线用对比源 instrument_meta；
+// 都取不到（对比源元数据在途/加载失败）归入"其他"组，不静默丢线
+function unitOfSeries(s) {
+  return (detail.value?.instrument_meta ?? {})[s.instrument_id]?.unit
+      ?? compareMeta.value[s.instrument_id]?.unit ?? "其他";
 }
+
+// 原值模式的图组：自有单位组（groupCharts，组序=区内单位首现序）+ 对比线单位
+// 并入同名组或追加新组（对比线只落对比区）
+function chartGroupsOf(sec) {
+  const ownMeta = detail.value.instrument_meta ?? {};
+  const groups = groupCharts(sec.iids, ownMeta);
+  if (!useUnified.value || sec.key !== compareSectionKey.value) return groups;
+  for (const s of compareSeries.value) {
+    if (s.instrument_id in ownMeta) continue;
+    const u = unitOfSeries(s);
+    if (!groups.some(g => g.unit === u)) groups.push({ unit: u, iids: [] });
+  }
+  return groups;
+}
+
+// 原值模式某图组的序列：有对比时（统一序列）own+compare 都取 compareSeries 原值
+// 按单位落组；无对比时回退 detail.series（空序列不进图例）
+function seriesOfGroup(sec, g) {
+  if (useUnified.value) {
+    const ownMeta = detail.value.instrument_meta ?? {};
+    return compareSeries.value
+      .filter(s => unitOfSeries(s) === g.unit
+                   && (ownMeta[s.instrument_id]
+                       ? sec.iids.includes(s.instrument_id)
+                       : sec.key === compareSectionKey.value))
+      .map(s => ({ name: s.name, data: s.points }));
+  }
+  return g.iids
+    .filter(iid => detail.value.series[iid]?.length)
+    .map(iid => ({ name: nameOf(iid), data: detail.value.series[iid] }));
+}
+
+// 每分区渲染的图列表：
+//  - 归一化（统一序列生效）：区内合并一张图——归一化后单位消失可比，Y 轴 %；
+//  - 原值：按计价单位分图（图标题带单位，如"价格（元/克）"），
+//    对比线按各自单位落入对应子图
+const sectionCharts = computed(() => sections.value.map(sec => {
+  const charts = [];
+  if (useUnified.value && normalize.value === 1) {
+    const series = seriesOf(sec);
+    if (series.length)
+      charts.push({ key: "merged", title: "", unit: null, percent: true, series });
+  } else {
+    for (const g of chartGroupsOf(sec)) {
+      const series = seriesOfGroup(sec, g);
+      if (series.length)
+        charts.push({ key: g.unit, title: `${sec.label}（${g.unit}）`,
+                      unit: g.unit, percent: false, series });
+    }
+  }
+  return { ...sec, charts };
+}));
 
 // 量纲约束（Task 14 审查）：compare 引入不同 unit 的源时自动置归一化（用户可手动关回）
 function onAdded(payload) {
@@ -162,7 +230,8 @@ function onAdded(payload) {
       <div class="card empty" v-else>数据累积中，暂无历史序列</div>
     </template>
 
-    <!-- v1.2 商品组源：按指标分区；全页一个归一化开关作用于所有分区；对比线叠加在价格区 -->
+    <!-- v1.2 商品组源：按指标分区；全页一个归一化开关作用于所有分区。
+         归一化：区内合并一张图（% 轴）；原值：按计价单位分图，对比线按各自单位落子图 -->
     <template v-else>
       <div class="compare-bar">
         <CompareChips v-model="compareIds" :exclude-ids="[id]" @added="onAdded" />
@@ -173,14 +242,16 @@ function onAdded(payload) {
         <span v-if="compareError" class="compare-error">对比序列加载失败：{{ compareError }}</span>
       </div>
 
-      <section v-for="sec in sections" :key="sec.key" class="metric-section">
+      <section v-for="sec in sectionCharts" :key="sec.key" class="metric-section">
         <h3 class="section-title">{{ sec.label }}</h3>
         <CardRow v-if="cardsOf(sec).length" :cards="cardsOf(sec)" :unit="detail.unit" use-card-unit />
-        <div class="card" v-if="seriesOf(sec).length">
-          <TrendChart :series="seriesOf(sec)" :percent="useUnified && normalize === 1"
-                      :unit="useUnified && normalize === 1 ? null : unitOf(sec)"
-                      :update-options="{ notMerge: true }" />
-        </div>
+        <template v-if="sec.charts.length">
+          <div class="card" v-for="ch in sec.charts" :key="`${sec.key}:${ch.key}`">
+            <h4 v-if="ch.title" class="chart-title">{{ ch.title }}</h4>
+            <TrendChart :series="ch.series" :percent="ch.percent" :unit="ch.unit"
+                        :update-options="{ notMerge: true }" />
+          </div>
+        </template>
         <div class="card empty" v-else>数据累积中</div>
       </section>
     </template>
@@ -197,4 +268,5 @@ function onAdded(payload) {
 .empty { color:#999; text-align:center; padding:40px; }
 .metric-section { margin-top:6px; }
 .section-title { font-size:14px; color:#444; margin:12px 0 0; padding-left:8px; border-left:3px solid #c0392b; }
+.chart-title { font-size:13px; color:#666; margin:0 0 2px; font-weight:600; }
 </style>
