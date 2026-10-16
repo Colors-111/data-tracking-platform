@@ -26,8 +26,9 @@ def clean_name(v) -> str:
     return "" if pd.isna(v) else str(v)
 
 def normalize_date(v, fallback: str | None = None) -> str | None:
-    """日期归一为 'YYYY-MM-DD'，覆盖四形态：
-       1. str/Timestamp/datetime64：取前 10 位，'/' 归一 '-'（cu 口径）
+    """日期归一为 'YYYY-MM-DD'，覆盖五形态：
+       1. str/Timestamp/datetime64：取前 10 位，'/' 归一 '-'（cu 口径）；
+          8 位纯数字字符串（生意社现货 'YYYYMMDD'）按整数形态解析
        2. epoch-ms 整数：UTC 锚定还原——pandas to_json 的 epoch-ms 以 UTC 午夜
           为基准，只有 UTC 转换才能无损还原日期，按北京午夜解释会差一天
        3. YYYYMMDD 整数（1e7–1e8）
@@ -36,6 +37,8 @@ def normalize_date(v, fallback: str | None = None) -> str | None:
        无法识别的其余形态按 cu 口径 str(v)[:10] 原样透出（fail-visible）。"""
     if v is None or pd.isna(v):
         return fallback
+    if isinstance(v, str) and v.isdigit() and len(v) == 8:
+        v = int(v)                              # 'YYYYMMDD' 字符串 → 走整数分支
     if isinstance(v, (int, float, np.integer, np.floating)):
         if 1e7 <= float(v) < 1e8:  # YYYYMMDD 整数（先判，区间与真实 epoch-ms 不重叠）
             return dt.datetime.strptime(str(int(v)), "%Y%m%d").strftime("%Y-%m-%d")
