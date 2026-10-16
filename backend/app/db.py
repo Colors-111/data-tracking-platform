@@ -53,7 +53,9 @@ def db_path() -> Path:
 def connect(path=None) -> sqlite3.Connection:
     p = Path(path) if path else db_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(p)
+    # check_same_thread=False：FastAPI 同步依赖与端点分别经 anyio 线程池调度，
+    # 可能落在不同线程；连接仍是每请求独占、顺序使用，跨线程复用是安全的
+    conn = sqlite3.connect(p, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
@@ -67,3 +69,12 @@ def init_db(conn: sqlite3.Connection) -> None:
     seed = Path(__file__).resolve().parent.parent / "seed.sql"
     conn.executescript(seed.read_text(encoding="utf-8"))
     conn.commit()
+
+
+def get_conn():
+    """FastAPI 依赖：每请求一个连接（读密集小库，无池也够用）。"""
+    c = connect()
+    try:
+        yield c
+    finally:
+        c.close()
