@@ -9,9 +9,12 @@
 #    若 data/ 已被 root 污染：`sudo chown -R 1000:1000 data/`
 # （可选）配置告警 webhook：项目根创建 .env，写一行 WEBHOOK_URL=https://...
 
-# 2) 构建镜像（API 服务随 Task 11 上线后 docker compose up -d web 即可用；
-#    在此之前 up web 会因 main.py 未实现而重启循环，属预期）
-docker compose build
+# 2) 构建镜像（--profile tools 必须：collect 服务带 profiles 标签，
+#    裸 build 只构建 web、collect 镜像会停留在旧版）
+docker compose --profile tools build
+
+# 2b) 启动 API 服务（http://<内网IP>:8000）
+docker compose up -d web
 
 # 3) 首次回补历史（默认全量：上交所份额自 2015-01-01，约 2500 个交易日，需 40 分钟量级；
 #    如需快速验证可先 --from 2026-01-01，之后随时用 --backfill 断点续跑补齐）
