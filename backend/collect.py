@@ -56,7 +56,7 @@ def previous_trade_date(run_date: str, n: int = 1) -> str:
     """run_date 之前第 n 个交易日（lag_days 语义）；日历不可用降级为第 n 个工作日。"""
     days = _trade_days()
     if not days:
-        log.warning("交易日历不可用，按工作日推算目标日")
+        log.warning("交易日历获取失败，按工作日推算目标日")
         d = dt.date.fromisoformat(run_date)
         for _ in range(n):
             d -= dt.timedelta(days=1)

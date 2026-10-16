@@ -1,5 +1,4 @@
 """stale 判定：库内最新日期落后于采集目标日（考虑 lag_days 已折算）。"""
-import sqlite3
 import pytest
 from backend.app import db
 
