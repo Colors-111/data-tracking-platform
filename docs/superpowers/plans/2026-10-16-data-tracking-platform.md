@@ -2156,9 +2156,11 @@ defineProps({ movements: Array });
   <table class="mv-table">
     <thead><tr><th>数据源 / 品种</th><th class="num">最新值</th><th class="num">变化</th><th class="num">5日趋势</th></tr></thead>
     <tbody>
-      <tr v-for="m in movements" :key="m.instrument_id">
+      <tr v-for="m in movements" :key="m.instrument_id"
+          :title="m.trade_date !== asOf ? `数据日期 ${m.trade_date}（源更新滞后）` : ''">
         <td><RouterLink :to="`/source/${m.source_id}`" class="mv-link">
-          {{ m.source_name }} · {{ m.instrument_name }}</RouterLink></td>
+          {{ m.source_name }} · {{ m.instrument_name }}</RouterLink>
+          <span v-if="m.trade_date !== asOf" class="stale-tag">{{ m.trade_date }}</span></td>
         <td class="num">{{ fmtVal(m.value, m.unit) }}</td>
         <td class="num" :class="pctColor(m.pct)">{{ fmtChange(m.change, m.pct) }}</td>
         <td class="num spark" :class="pctColor(m.pct)">{{ sparkBars(m.spark5) }}</td>
@@ -2176,9 +2178,12 @@ defineProps({ movements: Array });
 .mv-link { color:inherit; text-decoration:none; }
 .mv-link:hover { color:#c0392b; }
 .spark { letter-spacing: 2px; }
+.stale-tag { margin-left:6px; font-size:10px; color:#e67e22; background:#fef5e7; border-radius:3px; padding:1px 5px; }
 .none { color:#999; text-align:center; padding:24px; }
 </style>
 ```
+
+（script 需接收 asOf prop：`defineProps({ movements: Array, asOf: String })`——Task 12 审查确立：源更新滞后时异动行的 trade_date 会早于总览 as_of_date，必须标注防误导。）
 
 - [ ] **Step 2: 写 SourceTiles.vue**
 
@@ -2519,6 +2524,17 @@ style 追加：
 .compare-bar { display:flex; gap:14px; align-items:center; margin:10px 0; }
 .norm-toggle { font-size:12px; color:#666; }
 ```
+
+同时把图表组件接线 percent prop（否则归一化后 Y 轴仍标"亿份"，轴标签与数值语义矛盾）：
+
+```html
+<TrendChart :series="chartSeries" :percent="normalize === 1"
+            :unit="normalize === 1 ? null : detail.unit" />
+```
+
+注意（量纲约束）：compareIds 非空且未开归一化时，跨源原始值（亿份 vs 元/吨）共享单 Y 轴无意义，小量纲线会贴底。CompareChips 的 `add(sid)` 里对会引入不同 unit 的源默认把 normalize 置 1（`normalize.value = 1`），用户可手动关回——实现时以此为准。
+
+顺手处理（Task 14 审查 backlog，动本页时一并做）：TrendChart 加 `:update-options="{ notMerge: true }"`（防 dataZoom 窗口跨 range 残留）；option 的 grid 改 `containLabel: true`（防长轴标签裁剪）；路由/范围切换时 `detail.value = null` 显示加载态。
 
 - [ ] **Step 3: 构建冒烟**
 
