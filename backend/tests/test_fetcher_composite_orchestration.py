@@ -13,8 +13,10 @@
    - 6 位数字 code → EtfScaleFetcher（上交所份额快照；metric 'share' 重映射为
      instruments 行的 'holding'——黄金 ETF 持仓=份额，语义等价）
 
-   契约（对齐既有 composite 三支）：各分支观测合并返回；任一分支异常整体抛
-   （源级原子）；无成分的分支短路、不触接口；全部分支空 → []。
+   契约（v1.2.1 契约变更：源级原子 → 分支级失败隔离）：各分支观测合并返回；
+   单分支异常 → log.warning（分支名+错误摘要）跳过，其余分支照常产出
+   （部分可用数据不再被单所断连拖死）；全部已执行分支都失败才抛
+   （run_source 仍可标 failed）；无成分的分支短路、不触接口；全部分支空 → []。
    未识别 code（家族表之外的任意串）：不致命、无观测、告警留痕，
    保持既有静默语义但可观测。
 
@@ -268,27 +270,80 @@ def test_etf_holding_branch_metric_remapped(monkeypatch):
     assert got["au-shfe-price", "2026-10-16", "price"] == pytest.approx(886.48)
 
 
-def test_inventory_branch_failure_propagates(monkeypatch):
-    # 源级原子：新分支异常同样整体抛
-    def boom(**k):
+def test_inventory_branch_failure_isolated(monkeypatch, caplog):
+    # v1.2.1 契约变更（源级原子 → 分支级失败隔离）：库存分支挂 → 告警跳过，
+    # SHFE 日K 等其余分支照常产出（部分可用数据不再被单接口故障拖死）
+    def boom(*a, **k):
         raise RuntimeError("em down")
 
     f, _ = build(monkeypatch,
-                 [{"id": "cu-inventory", "code": "cu", "metric": "inventory"}],
+                 [{"id": "cu-inventory", "code": "cu", "metric": "inventory"},
+                  COPPER_INSTS[0]],
                  futures_inventory_em=boom)
-    with pytest.raises(RuntimeError):
-        f.fetch("2026-10-15")
+    got = keyed(f.fetch("2026-10-15"))
+    assert got["cu-shfe-price", "2026-10-16", "price"] == pytest.approx(886.48)
+    assert all(k[0] != "cu-inventory" for k in got)
+    assert "FuturesInventoryFetcher" in caplog.text and "em down" in caplog.text
 
 
-# ---------- 原子性 / 短路 / 未识别 code ----------
+# ---------- 分支级失败隔离 / 短路 / 未识别 code ----------
 
-def test_macro_branch_failure_propagates(monkeypatch):
-    # 源级原子：任一分支异常整体抛，而非静默返回半份数据
-    def boom():
+def test_macro_branch_failure_isolated(monkeypatch, caplog):
+    # v1.2.1 契约变更：LME 分支挂 → 告警跳过，其余分支照常产出
+    def boom(*a, **k):
         raise RuntimeError("lme down")
 
-    f, _ = build(monkeypatch, [COPPER_INSTS[3]], macro_euro_lme_stock=boom)
-    with pytest.raises(RuntimeError):
+    f, _ = build(monkeypatch, [COPPER_INSTS[3], COPPER_INSTS[0]],
+                 macro_euro_lme_stock=boom)
+    got = keyed(f.fetch("2026-10-15"))
+    assert got["cu-shfe-price", "2026-10-16", "price"] == pytest.approx(886.48)
+    assert all(k[0] != "cu-lme-stock" for k in got)
+    assert "LmeStockFetcher" in caplog.text and "lme down" in caplog.text
+
+
+def test_shfe_branch_failure_isolated(monkeypatch, caplog):
+    # SHFE 内部分支同样隔离：日K 挂 → 库存分支照常产出
+    def boom(*a, **k):
+        raise RuntimeError("sina down")
+
+    f, _ = build(monkeypatch,
+                 [COPPER_INSTS[0],
+                  {"id": "cu-inventory", "code": "cu", "metric": "inventory"}],
+                 futures_zh_daily_sina=boom)
+    got = keyed(f.fetch("2026-10-15"))
+    assert got["cu-inventory", "2026-10-15", "inventory"] == pytest.approx(65421.0)
+    assert all(k[0] != "cu-shfe-price" for k in got)
+    assert "shfe_daily" in caplog.text and "sina down" in caplog.text
+
+
+def test_sse_branch_survives_szse_failure(monkeypatch, caplog):
+    # 触发场景（v1.2.1）：沪深混合源深交所断连 3+ 小时——上交所品种观测
+    # 必须照常产出，不被单所断连拖死（159845 走深交所、518880 走上交所）
+    def boom(*a, **k):
+        raise RuntimeError("szse down")
+
+    f, _ = build(monkeypatch,
+                 [{"id": "au-etf-518880", "code": "518880", "metric": "holding"},
+                  {"id": "test-159845", "code": "159845", "metric": "holding"}],
+                 fund_scale_daily_szse=boom)
+    got = keyed(f.fetch("2026-10-15"))
+    assert got["au-etf-518880", "2026-10-15", "holding"] == pytest.approx(89.3)
+    assert all(k[0] != "test-159845" for k in got)
+    assert "SZSE" in caplog.text and "szse down" in caplog.text
+
+
+def test_all_branches_fail_reraises(monkeypatch):
+    # 全部已执行分支都失败 → 仍抛（run_source 能标 failed；静默全空更危险）
+    def boom(*a, **k):
+        raise RuntimeError("all down")
+
+    f, _ = build(monkeypatch,
+                 [COPPER_INSTS[0],
+                  {"id": "cu-inventory", "code": "cu", "metric": "inventory"},
+                  COPPER_INSTS[3]],
+                 futures_zh_daily_sina=boom, futures_inventory_em=boom,
+                 macro_euro_lme_stock=boom)
+    with pytest.raises(RuntimeError, match="全部分支失败"):
         f.fetch("2026-10-15")
 
 

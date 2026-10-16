@@ -342,14 +342,18 @@ def test_short_circuit_warrant_only_source(monkeypatch):
     assert calls["daily"] == [] and calls["spot"] == []
 
 
-def test_branch_failure_propagates(monkeypatch):
-    # 源级原子：单分支异常整体抛出，而非静默返回半份数据（对齐 etf_scale 契约）
+def test_branch_failure_isolated_partial_success(monkeypatch, caplog):
+    # v1.2.1 契约变更（原"任一分支异常整体抛"）：仓单分支挂 → 告警跳过，
+    # 日K/现货分支照常产出（部分可用数据不再被单接口故障拖死）
     def boom(date):
-        raise RuntimeError("shfe down")
+        raise RuntimeError("shfe warrant down")
 
     f, _ = build_fetcher_stub(monkeypatch, COPPER_INSTS, receipt=boom)
-    with pytest.raises(RuntimeError):
-        f.fetch("2026-10-15")
+    obs = f.fetch("2026-10-15")
+    ids = {o.instrument_id for o in obs}
+    assert {"cu-shfe-price", "cu-spot-price"} <= ids
+    assert "cu-warrant" not in ids
+    assert "shfe_warrant" in caplog.text and "shfe warrant down" in caplog.text
 
 
 def test_all_interfaces_empty_returns_empty(monkeypatch):

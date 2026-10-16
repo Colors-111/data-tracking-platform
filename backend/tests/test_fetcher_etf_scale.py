@@ -82,16 +82,33 @@ def test_dispatch_short_circuits(conn, monkeypatch):
     assert len(calls["sse"]) == 1    # 只有 star50 调了上交所
 
 
-def test_szse_failure_propagates(mixed_env, monkeypatch):
-    # 源级原子契约：单所接口异常必须抛出，而非静默返回半份（单所）数据——
-    # 上层 fetch_with_retry 重试整源时会把健康的一所连带重打，保证观测不缺所
+def test_szse_failure_isolated_sse_still_produces(mixed_env, monkeypatch, caplog):
+    # v1.2.1 契约变更（源级原子 → 分支级失败隔离）：深交所断连不再拖死
+    # 上交所——混合源（csi500：159922/512500/159820）上交所品种照常产出，
+    # 告警含分支名与错误摘要；两所全部失败才抛（见下）
     import backend.fetchers.akshare_etf_scale as mod
 
     def boom(start_date, end_date, symbol=None):
         raise RuntimeError("szse down")
 
     monkeypatch.setattr(mod.ak, "fund_scale_daily_szse", boom)
-    with pytest.raises(RuntimeError):
+    obs = mixed_env.fetch("2026-10-14")
+    got = {o.instrument_id: o for o in obs}
+    assert set(got) == {"512500"}
+    assert got["512500"].metric == "share"
+    assert "SZSE" in caplog.text and "szse down" in caplog.text
+
+
+def test_both_exchanges_fail_reraises(mixed_env, monkeypatch):
+    # 两所全部失败 → 仍抛（run_source 能标 failed；静默全空更危险）
+    import backend.fetchers.akshare_etf_scale as mod
+
+    def boom(*a, **k):
+        raise RuntimeError("both down")
+
+    monkeypatch.setattr(mod.ak, "fund_etf_scale_sse", boom)
+    monkeypatch.setattr(mod.ak, "fund_scale_daily_szse", boom)
+    with pytest.raises(RuntimeError, match="全部分支失败"):
         mixed_env.fetch("2026-10-14")
 
 

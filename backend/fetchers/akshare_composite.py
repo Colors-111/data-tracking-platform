@@ -1,6 +1,7 @@
 """商品复合 fetcher：一个 fetcher 服务四个商品组源（铜/铝/氧化铝/黄金，seed 均
    配 fetcher='akshare.composite'），按 instrument code 约定内部分流三支接口后
-   合并返回（源级原子：任一分支异常整体抛出，对齐 etf_scale 混合所语义）：
+   合并返回（分支级失败隔离：单分支异常告警跳过、其余分支照常产出，全部
+   已执行分支都失败才抛——v1.2.1 契约变更，详见编排契约）：
 
    - code 'CU0'/'AL0'/'AO0'/'AU0'   → SHFE 主力连续日K（全历史型）：
      futures_zh_daily_sina(symbol) 每次返回整段历史，fetch 忽略入参 trade_date
@@ -40,11 +41,15 @@
      产出 metric 'share' 重映射为 instruments 行配置——黄金 ETF 持仓=份额，
      语义等价，seed 不动）
 
-   编排契约（对齐既有三支）：各分支观测合并返回；任一分支异常整体抛（源级
-   原子）；子 fetcher 在构建期解析 targets（校验 code，fail-loud）但不触接口
-   ——无成分的分支照旧短路、全部分支空 → []。未识别 code（家族表之外的
-   任意 code）：不致命、无观测、log.warning 留痕。"""
+   编排契约（v1.2.1 契约变更：源级原子 → 分支级失败隔离）：各分支观测合并
+   返回；单分支异常 → log.warning（分支名+错误摘要）跳过，其余分支照常产出
+   （部分可用数据不再被单所断连拖死——触发场景：沪深混合源深交所断连时
+   上交所品种照常采集）；全部已执行分支都失败才抛 RuntimeError（run_source
+   仍可标 failed）。子 fetcher 在构建期解析 targets（校验 code，fail-loud）
+   但不触接口——无成分的分支照旧短路、全部分支空 → []。未识别 code（家族
+   表之外的任意 code）：不致命、无观测、log.warning 留痕。"""
 import logging
+from functools import partial
 
 import akshare as ak
 import pandas as pd
@@ -52,7 +57,7 @@ import pandas as pd
 from . import akshare_macro as _macro
 from .akshare_cu_inventory import FuturesInventoryFetcher
 from .akshare_etf_scale import EtfScaleFetcher
-from ._util import col, normalize_date
+from ._util import col, normalize_date, run_branches
 from .akshare_macro import (
     CftcNcFetcher,
     GoldReserveFetcher,
@@ -186,13 +191,22 @@ class CommodityCompositeFetcher:
         spot = {c: t for c, t in self.targets.items() if c in SPOT_VARS}
         warrant = {c.rsplit("-", 1)[0]: t for c, t in self.targets.items()
                    if c.endswith("-WARRANT") and not c.startswith("LME-")}
-        # 分流短路：无成分的分支不触发对应接口（对齐 etf_scale 混合所语义）
-        out = self._fetch_daily(daily) if daily else []
-        out += self._fetch_spot(trade_date, d, spot) if spot else []
-        out += self._fetch_warrants(trade_date, d, warrant) if warrant else []
-        for sub in self._subs:   # 委托分支（宏观/库存/ETF/现货）合并；子分支异常整体抛（源级原子）
-            out += sub.fetch(trade_date)
-        return out
+        # 分流短路：无成分的分支不进分支表、不触发对应接口（对齐 etf_scale 语义）
+        branches = []
+        if daily:
+            branches.append(("shfe_daily", partial(self._fetch_daily, daily)))
+        if spot:
+            branches.append(
+                ("shfe_spot", partial(self._fetch_spot, trade_date, d, spot)))
+        if warrant:
+            branches.append(
+                ("shfe_warrant",
+                 partial(self._fetch_warrants, trade_date, d, warrant)))
+        branches += [(type(s).__name__, partial(s.fetch, trade_date))
+                     for s in self._subs]
+        # 分支级失败隔离（v1.2.1）：单分支异常 → 告警跳过，其余照常产出；
+        # 全部已执行分支都失败才抛（run_source 仍可标 failed）
+        return run_branches(log, "composite", branches)
 
     def _fetch_daily(self, codes: dict) -> list[Observation]:
         out = []

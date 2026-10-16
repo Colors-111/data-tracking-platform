@@ -1,4 +1,4 @@
-"""fetcher 公共工具：列定位 / 代码归一 / 名称清洗 / 日期归一。
+"""fetcher 公共工具：列定位 / 代码归一 / 名称清洗 / 日期归一 / 分支级失败隔离。
    三次法则产物——原 _col 在 cu 与两个 ETF fetcher 各有一份本地复制，
    SHARE_CANDIDATES 漂移丢过 "份额合计(亿份)" 变体，故收敛到此。"""
 import datetime as dt
@@ -44,3 +44,28 @@ def normalize_date(v, fallback: str | None = None) -> str | None:
             return dt.datetime.strptime(str(int(v)), "%Y%m%d").strftime("%Y-%m-%d")
         return dt.datetime.fromtimestamp(int(v) / 1000, tz=dt.timezone.utc).strftime("%Y-%m-%d")
     return str(v)[:10].replace("/", "-")   # '2026-10-14' / '2026/10/14' / Timestamp
+
+
+def run_branches(log, label: str, branches) -> list:
+    """分支级失败隔离执行器（v1.2.1 契约变更：源级原子 → 逐分支 try/except）：
+       逐个执行 (分支名, callable) 并合并各分支返回的观测列表；单分支异常 →
+       log.warning（分支名+错误摘要）跳过，其余分支照常产出（部分可用数据
+       不再被单所断连拖死）；全部已执行分支都失败才抛 RuntimeError（run_source
+       仍可标 failed——静默全空比失败更危险）。ValueError（col() 缺列等数据
+       契约错误）不隔离、原样上抛——对齐 fail-loud 契约，禁静默产出错误数据。
+       composite 与 etf_scale 两级隔离共用此实现，语义一致；无成分分支不入
+       branches（短路不占名额）。"""
+    out, failed, last = [], [], None
+    for name, fn in branches:
+        try:
+            out += fn()
+        except ValueError:
+            raise      # fail-loud：缺列等数据契约错误不隔离（禁静默产出错误数据）
+        except Exception as e:   # 隔离语义要求逐分支兜住（宽捕获是有意为之）
+            failed.append(f"{name}: {e}")
+            last = e
+            log.warning("%s 分支失败，跳过（其余分支照常产出）: branch=%s err=%s",
+                        label, name, e)
+    if failed and len(failed) == len(branches):
+        raise RuntimeError(f"{label} 全部分支失败: " + "; ".join(failed)) from last
+    return out
