@@ -1487,7 +1487,7 @@ def source_detail(sid: str, range: str = Query("3m"), conn=Depends(get_conn)):
     if not as_of:
         return {"id": sid, "name": src["name"], "unit": src["unit"],
                 "as_of_date": None, "cards": [], "series": {}}
-    day_filter = f"AND o.trade_date >= date('{as_of}', '-{days} days')" if days else ""
+    day_filter = f"AND o.trade_date >= date(?, '-{days} days')" if days else ""
     rows = conn.execute(
         f"""SELECT o.instrument_id, o.trade_date, o.value,
                    FIRST_VALUE(o.value) OVER w AS first_v,
@@ -1498,7 +1498,7 @@ def source_detail(sid: str, range: str = Query("3m"), conn=Depends(get_conn)):
              WHERE i.source_id=? {day_filter}
              WINDOW w AS (PARTITION BY o.instrument_id ORDER BY o.trade_date),
                     w2 AS (PARTITION BY o.instrument_id ORDER BY o.trade_date DESC)""",
-        (sid,)).fetchall()
+        (sid, as_of)).fetchall()
     cards, series = [], {}
     by_inst: dict[str, list] = {}
     for r in rows:
@@ -2356,13 +2356,14 @@ def series(instruments: str = Query(""), normalize: int = 0,
         ids).fetchone()["m"]
     if not as_of:
         return {"as_of_date": None, "series": []}
-    where_days = f"AND trade_date >= date('{as_of}', '-{days} days')" if days else ""
+    where_days = f"AND trade_date >= date(?, '-{days} days')" if days else ""
+    # 注意：as_of 源自上游外部数据（trade_date 的 MAX），必须绑参不得 f-string 拼接
     if normalize:
         sql = f"""SELECT instrument_id, trade_date, value,
                          FIRST_VALUE(value) OVER (PARTITION BY instrument_id ORDER BY trade_date) base
                     FROM observations
                    WHERE instrument_id IN ({ph}) AND value IS NOT NULL {where_days}"""
-        raw = conn.execute(sql, ids).fetchall()
+        raw = conn.execute(sql, [*ids, as_of] if days else ids).fetchall()
         grouped: dict[str, list] = {}
         for r in raw:
             if not r["base"]:
@@ -2372,7 +2373,8 @@ def series(instruments: str = Query(""), normalize: int = 0,
     else:
         raw = conn.execute(
             f"""SELECT instrument_id, trade_date, value FROM observations
-                 WHERE instrument_id IN ({ph}) {where_days} ORDER BY trade_date""", ids).fetchall()
+                 WHERE instrument_id IN ({ph}) {where_days} ORDER BY trade_date""",
+            [*ids, as_of] if days else ids).fetchall()
         grouped = {}
         for r in raw:
             grouped.setdefault(r["instrument_id"], []).append([r["trade_date"], r["value"]])
