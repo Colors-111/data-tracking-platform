@@ -1108,7 +1108,7 @@ RUN npm run build
 
 # ---- 阶段2：Python 运行时（含 dev 组，容器内可跑 pytest）----
 FROM python:3.12-slim
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+COPY --from=ghcr.io/astral-sh/uv:0.13.1 /uv /uvx /usr/local/bin/
 RUN apt-get update && apt-get install -y --no-install-recommends tzdata \
     && rm -rf /var/lib/apt/lists/*
 ENV TZ=Asia/Shanghai PYTHONUNBUFFERED=1 UV_PROJECT_ENVIRONMENT=/app/.venv
@@ -1152,6 +1152,7 @@ services:
       - TZ=Asia/Shanghai
       - DB_PATH=/app/data/dtp.db
     restart: unless-stopped
+    user: "1000:1000"   # 与宿主机普通用户一致：./data 不被 root 污染（WAL 需目录可写）
 
   collect:
     build: .
@@ -1159,10 +1160,12 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - DB_PATH=/app/data/dtp.db
-      - WEBHOOK_URL=${WEBHOOK_URL:-}
+      - WEBHOOK_URL=${WEBHOOK_URL:-}   # compose 自动读项目根 .env
     command: ["uv", "run", "--no-sync", "python", "-m", "backend.collect"]
     profiles: ["tools"]   # 不随 up 启动，仅 docker compose run --rm collect 调用
 ```
+
+（首次部署若 data/ 已被 root 污染：`sudo chown -R 1000:1000 data/`）
 
 - [ ] **Step 4: 写 .dockerignore**
 
@@ -1174,8 +1177,10 @@ node_modules
 frontend/dist
 .superpowers
 .pytest_cache
-__pycache__
+**/__pycache__
 docs
+.env
+deploy
 ```
 
 - [ ] **Step 5: 构建并验证容器内跑通采集单测**
@@ -1190,13 +1195,65 @@ git add Dockerfile docker-compose.yml .dockerignore frontend/ && git commit -m "
 
 ---
 
-### Task 10: systemd 部署单元与 README
+### Task 10: 数据库备份 + systemd 部署单元与 README
 
 **Files:**
 - Create: `deploy/systemd/data-collect.timer`、`deploy/systemd/data-collect.service`、`deploy/systemd/data-notify@.service`
-- Modify: `README.md`
+- Modify: `backend/collect.py`（备份函数）、`backend/tests/test_collect.py`（备份测试）、`README.md`
 
-- [ ] **Step 1: 写三个 unit 文件**
+- [ ] **Step 1: 备份函数（TDD）——镜像内无 sqlite3 CLI，用 Python backup API**
+
+test_collect.py 追加：
+
+```python
+def test_backup_database_creates_snapshot_and_rotates(conn, monkeypatch, tmp_path):
+    dbfile = tmp_path / "dtp.db"
+    monkeypatch.setenv("DB_PATH", str(dbfile))
+    _run(conn)  # 造点数据
+    dest = C.backup_database(conn)
+    assert dest and (tmp_path / "backups" / f"dtp-{dt.date.today().isoformat()}.db").exists()
+    assert C.backup_database(conn) == dest          # 同日重复备份幂等
+    bdir = tmp_path / "backups"
+    for i in range(31):                             # 造 31 个旧备份
+        (bdir / f"dtp-2020-01-{i+1:02d}.db").write_text("x")
+    C.backup_database(conn)
+    remaining = sorted(p.name for p in bdir.glob("dtp-*.db"))
+    assert len(remaining) == 30 and "dtp-2020-01-01.db" not in remaining  # 滚动保留 30 份
+```
+
+（文件顶部需 `import datetime as dt`；跑红后实现）
+
+collect.py 追加（顶部补 `import sqlite3`）：
+
+```python
+def backup_database(conn, keep: int = 30) -> str:
+    """每日采集成功后单文件备份（SQLite backup API，WAL 安全），滚动保留 keep 份。"""
+    db = Path(os.environ.get("DB_PATH", "data/dtp.db"))
+    bdir = db.parent / "backups"
+    bdir.mkdir(parents=True, exist_ok=True)
+    dest = bdir / f"dtp-{dt.date.today().isoformat()}.db"
+    if not dest.exists():
+        dst = sqlite3.connect(dest)
+        with dst:
+            conn.backup(dst)
+        dst.close()
+    for old in sorted(bdir.glob("dtp-*.db"))[:-keep]:
+        old.unlink()
+    return str(dest)
+```
+
+（顶部需 `import os`、`from pathlib import Path`）main() 普通模式收尾改为：
+
+```python
+    if not bad:
+        backup_database(conn)   # 设计 §6：全部成功后备份，保留 30 天
+    log.info("完成：%d 源，failed=%d empty/stale=%d", len(results), len(bad),
+             sum(1 for r in results if r["status"] in ("empty", "stale")))
+    # 不显式 close：CLI 进程退出即释放；测试会注入连接，close 会伤及 fixture
+    return 1 if bad else 0
+```
+
+- [ ] **Step 2: 写三个 unit 文件**
 
 ```ini
 # deploy/systemd/data-collect.timer
@@ -1230,36 +1287,41 @@ Description=采集进程崩溃告警 %i
 
 [Service]
 Type=oneshot
-EnvironmentFile=-/opt/dtp/deploy/notify.env
+EnvironmentFile=-/opt/dtp/.env
 ExecStart=/usr/bin/curl -s -X POST ${WEBHOOK_URL} \
   -H "Content-Type: application/json" \
   -d "{\"msgtype\":\"text\",\"text\":{\"content\":\"数据平台采集进程崩溃: %i\"}}"
 ```
 
-- [ ] **Step 2: README 增加部署一节**
+（webhook URL 统一放 `/opt/dtp/.env`：compose 自动读取供 collect 用，data-notify 单元也读同一文件）
+
+- [ ] **Step 3: README 增加部署一节**
 
 ````markdown
 ## 快速开始（内网部署）
 
 ```bash
-# 构建 + 启动 Web（http://<内网IP>:8000）
-docker compose up -d --build web
+# 1) （可选）配置告警 webhook：项目根创建 .env，写一行 WEBHOOK_URL=https://...
 
-# 首次回补历史（默认全量：上交所份额自 2015-01-01，约 2500 个交易日，需 40 分钟量级；
-# 如需快速验证可先 --from 2026-01-01，之后随时用 --backfill 断点续跑补齐）
+# 2) 构建镜像（API 服务随 Task 11 上线后 docker compose up -d web 即可用；
+#    在此之前 up web 会因 main.py 未实现而重启循环，属预期）
+docker compose build
+
+# 3) 首次回补历史（默认全量：上交所份额自 2015-01-01，约 2500 个交易日，需 40 分钟量级；
+#    如需快速验证可先 --from 2026-01-01，之后随时用 --backfill 断点续跑补齐）
 docker compose run --rm collect uv run --no-sync python -m backend.collect \
   --backfill --from 2015-01-01
 
-# 定时采集（宿主机）
+# 4) 定时采集（宿主机 systemd；要求宿主机时区为 Asia/Shanghai）
 sudo cp deploy/systemd/* /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now data-collect.timer
 ```
 ````
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add deploy/ README.md && git commit -m "deploy: systemd timer/service/崩溃告警单元 + README 快速开始"
+git add backend/collect.py backend/tests/test_collect.py deploy/ README.md && git commit -m "feat: 每日备份滚动保留30天 + systemd timer/service/崩溃告警 + README"
 ```
 
 ---
