@@ -15,13 +15,21 @@ def client(conn, tmp_path, monkeypatch):
     app.dependency_overrides.clear()
 
 
-def test_list_sources_grouped(client):
+def test_list_sources_grouped(client, conn):
+    # 造 510300 两天数据（100→103）：速览卡 total_value=103、day_change=3
+    conn.execute("INSERT INTO observations VALUES('510300','share','2026-10-14',100,NULL,'t')")
+    conn.execute("INSERT INTO observations VALUES('510300','share','2026-10-15',103,NULL,'t')")
+    conn.commit()
     r = client.get("/api/sources")
     assert r.status_code == 200
     groups = {g["group"]: g["sources"] for g in r.json()}
     assert "指数 ETF" in groups and "大宗商品" in groups
     hs = next(s for s in groups["指数 ETF"] if s["id"] == "hs300-etf")
     assert hs["name"] == "沪深300 ETF" and hs["unit"] == "亿份"
+    assert hs["total_value"] == 103 and hs["day_change"] == 3
+    # 无 observation 的源：合计字段为 NULL 而非报错
+    coal = next(s for s in groups["大宗商品"] if s["id"] == "coal-price")
+    assert coal["total_value"] is None and coal["day_change"] is None
 
 
 def test_source_detail_shape(client, conn):

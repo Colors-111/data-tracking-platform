@@ -8,12 +8,21 @@ RANGE_DAYS = {"1m": 31, "3m": 92, "6m": 183, "1y": 366, "all": None}
 
 @router.get("/api/sources")
 def list_sources(conn=Depends(get_conn)):
+    # total_value/day_change：各 instrument 的 rn=1 最新行求和/求差；
+    # 跨 instrument 最新日期不齐（各取各的最后一行）时合计值为近似
     rows = conn.execute(
-        """SELECT s.id, s.name, s.group_name, s.unit, s.sort_order,
+        """WITH latest AS (
+             SELECT i.source_id, o.value,
+                    LAG(o.value) OVER (PARTITION BY o.instrument_id ORDER BY o.trade_date) prev_v,
+                    ROW_NUMBER() OVER (PARTITION BY o.instrument_id ORDER BY o.trade_date DESC) rn
+               FROM observations o JOIN instruments i ON i.id=o.instrument_id)
+           SELECT s.id, s.name, s.group_name, s.unit, s.sort_order,
                   (SELECT COUNT(*) FROM instruments i WHERE i.source_id=s.id) AS inst_count,
                   (SELECT MAX(o.trade_date) FROM observations o
-                     JOIN instruments i2 ON i2.id=o.instrument_id
-                    WHERE i2.source_id=s.id) AS latest_date
+                     JOIN instruments i2 ON i2.id=o.instrument_id WHERE i2.source_id=s.id) AS latest_date,
+                  (SELECT SUM(value) FROM latest WHERE latest.source_id=s.id AND rn=1) AS total_value,
+                  (SELECT SUM(value-prev_v) FROM latest
+                     WHERE latest.source_id=s.id AND rn=1 AND prev_v IS NOT NULL) AS day_change
              FROM sources s WHERE s.enabled=1 ORDER BY s.sort_order""").fetchall()
     groups: dict[str, list] = {}
     for r in rows:
