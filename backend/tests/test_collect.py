@@ -167,6 +167,40 @@ def test_backfill_fills_history_before_recent_data(conn, fake_source, monkeypatc
         "SELECT trade_date FROM job_runs")}
     assert ran == {"2026-01-05", "2026-01-06"}   # d=01-07 的 target 已覆盖 → 未 fetch
 
+def test_backfill_empty_days_survive_future_data(conn, fake_source, monkeypatch):
+    # 上市前空日（fetch 返回 0 行）遇上并发日更已写入的近期数据（source_max_date 跳高）：
+    # 不得误判为窗口型而 break。区分依据：真窗口型返回【非空行】但不覆盖目标日，
+    # 空日返回【0 行】——早停条件须加 rows>0 守卫。
+    monkeypatch.setattr(C, "connect", lambda: conn)
+    monkeypatch.setattr(C, "trade_dates_from_to",
+                        lambda a, b: ["2026-01-05", "2026-01-06", "2026-01-07"])
+    conn.execute("INSERT INTO observations VALUES"
+                 "('f1','price','2026-01-06',99.0,NULL,'2026-01-07T09:00:00')")  # 模拟并发日更
+    conn.commit()
+
+    @register("fake.prelisting")
+    class PreListing:
+        source_id = "fake"; lag_days = 1
+        def __init__(self, source, instruments): pass
+        def fetch(self, trade_date):
+            if trade_date < "2026-01-05":   # 上市前 → 0 行（空日）
+                return []
+            return [Observation("f1", "price", trade_date, 42.0)]
+
+    conn.execute("UPDATE sources SET fetcher='fake.prelisting' WHERE id='fake'"); conn.commit()
+    rc = C.main(["--backfill", "--from", "2026-01-05", "--to", "2026-01-07",
+                 "--source", "fake"])
+    assert rc == 0
+    # 空日（target 01-02）不触发早停；空日后的首个有数据日（target 01-05）被正常补上
+    targets = {r["trade_date"] for r in conn.execute(
+        "SELECT DISTINCT trade_date FROM observations")}
+    assert targets == {"2026-01-05", "2026-01-06"}   # 01-06 预插；01-05 为上市后首日
+    ran = [r["trade_date"] for r in conn.execute(
+        "SELECT trade_date FROM job_runs ORDER BY id")]
+    assert ran == ["2026-01-05", "2026-01-06"]   # 两个空日都执行；d=01-07 目标已覆盖跳过
+    # 对照：非空行但不覆盖目标日（真窗口型）仍然 break——见
+    # test_backfill_window_fetcher_stops_early（rows>0 时守卫不生效，行为不变）
+
 def test_backfill_window_fetcher_stops_early(conn, fake_source, monkeypatch):
     # 窗口型源（fetch 忽略目标日，恒返回近期整段）：首次 fetch 后即 break，不空跑整个区间
     monkeypatch.setattr(C, "connect", lambda: conn)

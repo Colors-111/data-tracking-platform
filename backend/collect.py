@@ -178,10 +178,12 @@ def main(argv=None):
                 if r["status"] == "failed":
                     failed.append((s["id"], d))
                     break   # 断点续跑：保留现场，下次回补从该日重试
-                if (not r.get("covered")
+                if (r["rows"] > 0
+                        and not r.get("covered")
                         and (h := source_max_date(conn, s["id"]))
                         and h > r["target_date"]):
-                    # 窗口型源：fetch 不含目标日（只覆盖近期），向更早回补不会再有产出
+                    # 窗口型源：fetch 返回非空行但不含目标日（只覆盖近期），向更早回补不会再有产出。
+                    # 0 行（上市前空日）不算——否则并发日更跳高 source_max_date 会把空日误判成窗口型
                     log.info("源 %s 为窗口型（fetch 不含目标日，仅覆盖近期），停止向更早回补",
                              s["id"])
                     break
