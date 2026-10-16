@@ -22,6 +22,6 @@ defineProps({ cards: Array, unit: String });
 .cards-row { display: flex; gap: 10px; flex-wrap: wrap; margin: 14px 0; }
 .inst-card { background:#fff; border-radius:8px; padding:12px 16px; min-width:170px; flex:1; cursor:default; }
 .inst-name { color:#666; font-size:12px; }
-.inst-value { font-size:20px; font-weight:700; margin:4px 0; }
-.range-change { color:#999; font-size:11px; margin-top:2px; }
+.inst-value { font-size:20px; font-weight:700; margin:4px 0; font-variant-numeric: tabular-nums; }
+.range-change { color:#999; font-size:11px; margin-top:2px; font-variant-numeric: tabular-nums; }
 </style>
