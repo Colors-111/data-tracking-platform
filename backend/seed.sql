@@ -5,7 +5,8 @@ INSERT OR IGNORE INTO sources(id,name,group_name,freq,fetcher,unit,movement_th,l
  ('csi500-etf','中证500 ETF','指数 ETF','daily','akshare.etf_scale','亿份',1.0,1,1,10),
  ('star50-etf','科创50 ETF','指数 ETF','daily','akshare.etf_scale','亿份',1.0,1,1,11),
  ('chinext-etf','创业板 ETF','指数 ETF','daily','akshare.etf_scale','亿份',1.0,1,1,12),
- ('dividend-etf','红利 ETF','指数 ETF','daily','akshare.etf_scale','亿份',1.0,1,1,13);
+ ('dividend-etf','红利 ETF','指数 ETF','daily','akshare.etf_scale','亿份',1.0,1,1,13),
+ ('a500-etf','中证A500 ETF','指数 ETF','daily','akshare.etf_scale','亿份',1.0,1,1,14);
 
 INSERT OR IGNORE INTO instruments(id,source_id,code,metric,name,sort_order) VALUES
  ('510300','hs300-etf','510300','share','沪深300ETF华泰柏瑞',1),
@@ -24,6 +25,13 @@ INSERT OR IGNORE INTO instruments(id,source_id,code,metric,name,sort_order) VALU
  ('159915','chinext-etf','159915','share','创业板ETF易方达',1),
  ('159949','chinext-etf','159949','share','创业板50ETF华安',2),
  ('159952','chinext-etf','159952','share','创业板ETF广发',3),
+ ('159967','chinext-etf','159967','share','创业板成长ETF华夏',4),
+ ('159977','chinext-etf','159977','share','创业板ETF天弘',5),
  ('512890','dividend-etf','512890','share','红利低波ETF',1),
  ('515450','dividend-etf','515450','share','红利50ETF',2),
- ('515180','dividend-etf','515180','share','中证红利ETF',3);
+ ('515180','dividend-etf','515180','share','中证红利ETF',3),
+ ('563020','dividend-etf','563020','share','低波红利ETF',4),
+ ('515080','dividend-etf','515080','share','中证红利ETF',5),
+ ('159352','a500-etf','159352','share','A500ETF南方',1),
+ ('159361','a500-etf','159361','share','A500ETF易方达',2),
+ ('159338','a500-etf','159338','share','中证A500ETF国泰',3);

@@ -17,7 +17,7 @@ def test_wal_mode(conn):
 
 def test_seed_loaded(conn):
     # 3 原有源 + 4 新 ETF 源（csi500/star50/chinext/dividend-etf）
-    assert conn.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"] == 7
+    assert conn.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"] == 8
     assert conn.execute(
         "SELECT COUNT(*) c FROM instruments WHERE source_id='hs300-etf'"
     ).fetchone()["c"] == 5
@@ -48,4 +48,4 @@ def test_observation_fk_enforced(conn):
 
 def test_init_db_idempotent(conn):
     db.init_db(conn)
-    assert conn.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"] == 7
+    assert conn.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"] == 8
