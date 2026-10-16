@@ -49,7 +49,7 @@ INSERT INTO instruments(id,source_id,code,metric,unit,name,sort_order) VALUES
  ('cu-inventory','copper','cu','inventory','吨','SHFE电解铜库存',3)
  ON CONFLICT(id) DO UPDATE SET source_id='copper', unit='吨', name='SHFE电解铜库存', sort_order=3;
 DELETE FROM sources WHERE id='cu-inventory';   -- job_runs.source_id 无 FK，历史留痕不受影响
--- 铜组其余品种（fetcher 由其他任务实现，akshare.composite 占位）
+-- 铜组其余品种（composite fetcher 按 code 家族编排：SHFE日K/现货/仓单/LME/CFTC）
 INSERT OR IGNORE INTO instruments(id,source_id,code,metric,unit,name,sort_order) VALUES
  ('cu-shfe-price','copper','CU0','price','元/吨','SHFE沪铜主力',1),
  ('cu-spot-price','copper','CU','price','元/吨','现货铜价',2),
