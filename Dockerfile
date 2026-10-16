@@ -1,8 +1,10 @@
-# ---- 阶段1：前端占位（Task 13 后替换为 npm ci + npm run build）----
+# ---- 阶段1：前端构建（Node 环境隔离在镜像内）----
 FROM node:20-slim AS fe
 WORKDIR /fe
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
 COPY frontend/ ./
-RUN mkdir -p dist && echo "frontend placeholder" > dist/index.html
+RUN npm run build
 
 # ---- 阶段2：Python 运行时（含 dev 组，容器内可跑 pytest）----
 FROM python:3.12-slim
