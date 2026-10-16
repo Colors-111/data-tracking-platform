@@ -289,15 +289,18 @@ class Observation:
 class Fetcher(Protocol):
     source_id: str
     lag_days: int            # 数据发布滞后天数（T+1 源=1）
+    def __init__(self, source, instruments): ...
+    # ↑ 3.12 必需存根：无它则继承类带参实例化沿 MRO 撞 object.__init__ 报 TypeError（gh-92445）
     def fetch(self, trade_date: str) -> list[Observation]: ...
 
 _REGISTRY: dict[str, type] = {}
 
 def register(name: str):
+    """注册 fetcher 类。重名抛 ValueError（fail-loud，防测试/代码静默覆盖）。"""
     def deco(cls):
+        if name in _REGISTRY:
+            raise ValueError(f"fetcher 重名注册: {name}")
         _REGISTRY[name] = cls
-        if not getattr(cls, "source_id", None):
-            cls.source_id = name.split(".")[-1]
         return cls
     return deco
 
@@ -876,7 +879,7 @@ from backend.app import db
 
 def _seed_pair(conn):
     conn.execute("INSERT OR REPLACE INTO sources VALUES"
-                 "('v','V','g','daily','fake.ok','x',1.0,0,1,9)")
+                 "('v','V','g','daily','fake.stale','x',1.0,0,1,9)")
     conn.execute("INSERT OR REPLACE INTO instruments VALUES"
                  "('v1','v','V1','price','v',1)")
     conn.execute("INSERT INTO observations VALUES"
@@ -885,7 +888,7 @@ def _seed_pair(conn):
 
 def test_stale_when_behind_target(conn):
     from backend.fetchers.base import Observation, register
-    @register("fake.ok")
+    @register("fake.stale")
     class Ok:
         source_id = "v"; lag_days = 0
         def __init__(self, source, instruments): pass
