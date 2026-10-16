@@ -459,10 +459,13 @@ class SseEtfScaleFetcher:
         for _, r in df.iterrows():
             code = str(r[c_code]).zfill(6)
             if code in self.targets:
+                name = r.get("基金简称")
+                # 注意：不能用 `name or ""`（pandas3 StringDtype 的 pd.NA 会抛
+                # TypeError；NaN 的 bool 还是 True），必须显式 pd.isna
                 out.append(Observation(
                     self.targets[code], "share", trade_date,
                     float(r[c_share]) / 1e8,   # 份 → 亿份
-                    {"name": str(r.get("基金简称", ""))}))
+                    {"name": "" if pd.isna(name) else str(name)}))
         return out
 ```
 
@@ -527,6 +530,13 @@ def test_returns_full_history(cu_fetcher):
 def test_dates_normalized(cu_fetcher):
     obs = cu_fetcher.fetch("2026-10-16")
     assert all(len(o.trade_date) == 10 and o.trade_date[4] == "-" for o in obs)
+
+def test_fetch_empty_df_returns_empty(cu_fetcher, monkeypatch):
+    import backend.fetchers.akshare_cu_inventory as mod
+    import types as _t
+    monkeypatch.setattr(mod, "ak",
+                        _t.SimpleNamespace(futures_inventory_em=lambda s: None))
+    assert cu_fetcher.fetch("2026-10-16") == []   # 生产路径：接口返回空
 ```
 
 - [ ] **Step 2: 运行确认失败**
