@@ -19,14 +19,21 @@
    保持既有静默语义但可观测。
 
    打桩方式：composite 与 akshare_macro 的 `import akshare as ak` 指向同一
-   模块对象，直接在 akshare 模块属性上打桩即可同时覆盖两侧分支。"""
+   模块对象，直接在 akshare 模块属性上打桩即可同时覆盖两侧分支。
+
+   另含 seed↔composite↔子 fetcher 三方一致性集成测试（v1.2 综合审查 Minor 修复）：
+   解析 backend/seed.sql 真实内容，逐一断言商品组源全部品种的路由家族、
+   硬编码分支产出 metric 与 seed 行一致、composite 接线与各源子 fetcher 齐备。"""
 import logging
+import re
+from pathlib import Path
 
 import akshare
 import pandas as pd
 import pytest
 
 import backend.fetchers.akshare_macro as macro_mod
+from backend.fetchers import akshare_composite as comp_mod
 from backend.fetchers.base import Observation, build_fetcher
 
 SRC = {"id": "copper", "name": "铜", "fetcher": "akshare.composite"}
@@ -308,3 +315,215 @@ def test_unmatched_code_warns_and_yields_nothing(monkeypatch, caplog):
     assert f.fetch("2026-10-15") == []
     assert all(not p for p in calls.values())   # 不触任何接口
     assert "XX-UNKNOWN" in caplog.text
+
+
+# ---------- seed ↔ composite ↔ 子 fetcher 三方一致性（v1.2 综合审查 Minor 修复） ----------
+
+_SEED_SQL = Path(__file__).resolve().parents[1] / "seed.sql"
+_SQL_VALUES_RE = re.compile(
+    r"INSERT\s+(?:OR\s+IGNORE\s+)?INTO\s+(\w+)\s*\(([^)]*)\)\s*VALUES(.*?);",
+    re.S | re.I)
+
+# 全部 27 个品种的预期路由（与 seed.sql 商品组源 instruments 一一对应）。
+# 双向集合比对：seed 增删品种必须同步更新此表——锁死“seed↔composite↔
+# 子 fetcher”这条最容易断的缝（上次 seed 对齐改的就是它）。
+EXPECTED_ROUTE = {
+    # copper：SHFE 日K / 生意社现货 / 上期所仓单 / LME 库存·仓单·净持仓 / 东财库存
+    "CU0": "shfe_daily",
+    "CU": "shfe_spot",
+    "CU-WARRANT": "shfe_warrant",
+    "LME-CU-STOCK": "lme_stock",
+    "LME-CU-WARRANT": "lme_stock",
+    "LME-CU-POS": "lme_holding",
+    "cu": "inventory",
+    # aluminum
+    "AL0": "shfe_daily",
+    "AL": "shfe_spot",
+    "al": "inventory",
+    "AL-WARRANT": "shfe_warrant",
+    "LME-AL-STOCK": "lme_stock",
+    "LME-AL-WARRANT": "lme_stock",
+    "LME-AL-POS": "lme_holding",
+    # alumina
+    "AO0": "shfe_daily",
+    "AO": "shfe_spot",
+    "ao": "inventory",
+    "AO-WARRANT": "shfe_warrant",
+    # gold：SHFE 日K / SGE 现货 / 仓单 / 央行储备 / ETF 持仓 / CFTC / 伦敦金现
+    "AU0": "shfe_daily",
+    "AU9999": "sge_spot",
+    "AU-WARRANT": "shfe_warrant",
+    "GOLD-RESERVE": "reserve",
+    "518880": "etf",
+    "518800": "etf",
+    "518660": "etf",
+    "CFTC-AU": "cftc",
+    "XAU": "london_spot",
+}
+
+# 子 fetcher 硬编码产出 metric 的分支：必须与 seed 行 metric 一致。
+# （SHFE 三支与 ETF 重映射为行驱动——composite 用 targets 里的 seed metric，
+# 接线正确性由下方 targets 断言覆盖，无需在此重复。）
+BRANCH_METRIC = {
+    "cu": "inventory", "al": "inventory", "ao": "inventory",
+    "LME-CU-STOCK": "inventory", "LME-CU-WARRANT": "warehouse",
+    "LME-AL-STOCK": "inventory", "LME-AL-WARRANT": "warehouse",
+    "LME-CU-POS": "positioning", "LME-AL-POS": "positioning",
+    "GOLD-RESERVE": "reserve", "CFTC-AU": "positioning",
+    "AU9999": "price", "XAU": "price",
+}
+
+# 各 composite 源构建期应接线的委托子 fetcher 类型（缺一即该分支断供）
+EXPECTED_SUBS = {
+    "copper": ["LmeStockFetcher", "LmeHoldingFetcher", "FuturesInventoryFetcher"],
+    "aluminum": ["LmeStockFetcher", "LmeHoldingFetcher", "FuturesInventoryFetcher"],
+    "alumina": ["FuturesInventoryFetcher"],
+    "gold": ["SgeSpotFetcher", "GoldReserveFetcher", "CftcNcFetcher",
+             "LondonSpotFetcher", "_HoldingEtfFetcher"],
+}
+
+
+def _sql_token(tok: str):
+    tok = tok.strip()
+    if tok.upper() == "NULL":
+        return None
+    if len(tok) >= 2 and tok[0] == "'" and tok[-1] == "'":
+        return tok[1:-1].replace("''", "'")     # SQL 单引号转义
+    return tok
+
+
+def _sql_split(s: str) -> list[str]:
+    """按顶层逗号切分（单引号字符串内的逗号与 '' 转义不切断）。"""
+    parts, buf, in_q, i = [], [], False, 0
+    while i < len(s):
+        ch = s[i]
+        if in_q:
+            if ch == "'":
+                if s[i + 1:i + 2] == "'":
+                    buf.append("''")
+                    i += 2
+                    continue
+                in_q = False
+            buf.append(ch)
+        elif ch == "'":
+            in_q = True
+            buf.append(ch)
+        elif ch == ",":
+            parts.append("".join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+        i += 1
+    parts.append("".join(buf))
+    return [p.strip() for p in parts]
+
+
+def _sql_tuples(body: str) -> list[list[str]]:
+    """VALUES 体 → 逐元组字段列表（括号配对、引号感知）。"""
+    out, depth, buf, in_q, i = [], 0, [], False, 0
+    while i < len(body):
+        ch = body[i]
+        if in_q:
+            if ch == "'":
+                if body[i + 1:i + 2] == "'":
+                    buf.append("''")
+                    i += 2
+                    continue
+                in_q = False
+            buf.append(ch)
+        elif ch == "'":
+            in_q = True
+            buf.append(ch)
+        elif ch == "(":
+            depth += 1
+            if depth == 1:
+                buf = []
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                out.append([_sql_token(t) for t in _sql_split("".join(buf))])
+                buf = []
+            else:
+                buf.append(ch)
+        elif depth > 0:
+            buf.append(ch)
+        i += 1
+    return out
+
+
+def _parse_seed():
+    """解析 seed.sql 的 sources/instruments INSERT：按语句列头映射（容忍列序
+    变化与 v1/v1.2 两代列差异、INSERT OR IGNORE 拼写、ON CONFLICT 子句），
+    id 冲突取最后一条（对齐 cu-inventory 行的 INSERT ... ON CONFLICT DO UPDATE）。"""
+    sources, insts = {}, {}
+    for m in _SQL_VALUES_RE.finditer(_SEED_SQL.read_text(encoding="utf-8")):
+        table = m.group(1).lower()
+        cols = [c.strip().strip('"').lower() for c in m.group(2).split(",")]
+        if table not in ("sources", "instruments"):
+            continue
+        for fields in _sql_tuples(m.group(3)):
+            if len(fields) != len(cols):
+                continue    # ON CONFLICT(id) 等非 VALUES 元组
+            row = dict(zip(cols, fields))
+            (sources if table == "sources" else insts)[row["id"]] = row
+    return sources, insts
+
+
+def _route(code) -> str | None:
+    """composite 路由镜像：_family() 之上把 SHFE 家族细分为三支（用模块公开
+    常量推导，与 fetch() 内分流同一判据）；可选现货类名映射为可读家族名。"""
+    if code in comp_mod.SHFE_DAILY_CODES:
+        return "shfe_daily"
+    if code in comp_mod.SPOT_VARS:
+        return "shfe_spot"
+    if code.endswith("-WARRANT") and not code.startswith("LME-"):
+        return "shfe_warrant"
+    fam = comp_mod._family(code)
+    if fam is None:
+        return None
+    return {"SgeSpotFetcher": "sge_spot",
+            "LondonSpotFetcher": "london_spot"}.get(fam, fam)
+
+
+def test_seed_composite_route_consistency():
+    """seed.sql ↔ composite 路由 ↔ 子 fetcher 三方一致性集成锁：
+       解析 seed.sql 真实内容里 akshare.composite 源的全部 instruments，
+       逐一断言 27 个品种的 code 路由到预期家族、硬编码分支产出 metric 与
+       seed 行一致、composite targets 按 (id, metric) 与 seed 对齐、
+       各源构建期子 fetcher 齐备。"""
+    sources, insts = _parse_seed()
+    # 商品组四源全部走 akshare.composite（新增 composite 源须同步更新断言与路由表）
+    comp_ids = {sid for sid, s in sources.items()
+                if s["fetcher"] == "akshare.composite"}
+    assert comp_ids == {"copper", "aluminum", "alumina", "gold"}
+    rows = [r for r in insts.values() if r["source_id"] in comp_ids]
+    assert len(rows) == 27
+    codes = [r["code"] for r in rows]
+    assert len(set(codes)) == len(codes)        # code 唯一（composite targets 键）
+    # 双向覆盖：seed 增删品种 vs EXPECTED_ROUTE 必须同步，防静默漂移
+    assert set(codes) == set(EXPECTED_ROUTE)
+
+    for r in rows:
+        code, metric = r["code"], r["metric"]
+        route = _route(code)
+        assert route == EXPECTED_ROUTE[code], (
+            f"{code}: 路由 {route!r} != 预期 {EXPECTED_ROUTE[code]!r}")
+        if code in BRANCH_METRIC:
+            assert metric == BRANCH_METRIC[code], (
+                f"{code}: seed metric {metric!r} != 分支硬编码产出 "
+                f"{BRANCH_METRIC[code]!r}")
+
+    # 构建期接线：每源可构建，targets 把 code → (id, metric) 与 seed 行对齐，
+    # 委托子 fetcher 类型齐备（构建不触接口，无需打桩）
+    for sid in sorted(comp_ids):
+        inst_rows = sorted((r for r in rows if r["source_id"] == sid),
+                           key=lambda r: int(r["sort_order"]))
+        payload = [{"id": r["id"], "code": r["code"], "metric": r["metric"]}
+                   for r in inst_rows]
+        f = build_fetcher("akshare.composite", {"id": sid}, payload)
+        assert isinstance(f, comp_mod.CommodityCompositeFetcher)
+        assert set(f.targets) == {r["code"] for r in inst_rows}
+        for r in inst_rows:
+            assert f.targets[r["code"]] == (r["id"], r["metric"]), r["code"]
+        subs = sorted(type(s).__name__ for s in f._subs)
+        assert subs == sorted(EXPECTED_SUBS[sid]), f"{sid}: 子 fetcher {subs}"
