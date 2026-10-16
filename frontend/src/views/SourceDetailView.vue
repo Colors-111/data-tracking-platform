@@ -17,6 +17,7 @@ const compareError = ref("");    // 对比序列加载失败：局部提示，�
 const normalize = ref(0);
 
 let seq = 0;
+let cseq = 0;
 async function load() {
   const my = ++seq; // 快速切换 range/id 时丢弃过期响应
   cseq++; // 作废在途的对比序列响应（旧源/旧 range 的 own ids 不再适用）
@@ -35,7 +36,6 @@ async function load() {
 }
 
 // own + compare 统一走 /api/series（归一化与原值都由后端算好）
-let cseq = 0;
 async function loadCompare() {
   const my = ++cseq; // 快速切换 compareIds/normalize 时丢弃过期响应
   compareError.value = "";
@@ -49,20 +49,31 @@ async function loadCompare() {
     const res = await api.series(allIds, { normalize: normalize.value, range: range.value });
     if (my === cseq) compareSeries.value = res.series;
   } catch (e) {
-    if (my === cseq) compareError.value = e?.message ?? String(e);
+    if (my === cseq) {
+      compareSeries.value = []; // 失败后诚实回退 own 原值，不让 % 轴静默显示原始值
+      compareError.value = e?.message ?? String(e);
+    }
   }
 }
 onMounted(load);
 watch([() => props.id, range], load);
+// 切源清空对比：对比是"当前源"的上下文，不跨源携带（同时消除自对比 chip）
+watch(() => props.id, () => {
+  compareIds.value = [];
+  normalize.value = 0;
+});
 watch([compareIds, normalize], loadCompare);
 
 const nameOf = (iid) =>
   detail.value?.cards.find(c => c.instrument_id === iid)?.name ?? iid;
+// 统一序列模式：/api/series 数据就位时才生效；失败/未返回时回退 own 原值，
+// percent/unit 轴也跟着回退，避免 % 轴误标原始值
+const useUnified = computed(() =>
+  (compareIds.value.length || normalize.value === 1) && compareSeries.value.length > 0);
 const chartSeries = computed(() => {
-  // 对比/归一化模式：用 /api/series 返回的统一序列（后端已算好原值或期初=100）
-  if ((compareIds.value.length || normalize.value === 1) && compareSeries.value.length)
+  if (useUnified.value)
     return compareSeries.value.map(s => ({ name: s.name, data: s.points }));
-  // 纯原值模式（或归一化序列尚未返回/为空）回退到 detail 自带序列
+  // 原值模式回退到 detail 自带序列
   return Object.entries(detail.value?.series ?? {})
     .map(([iid, pts]) => ({ name: nameOf(iid), data: pts }))
     .filter(s => s.data.length); // 未回补的空 instrument 不进图例
@@ -102,8 +113,8 @@ function onAdded(payload) {
     </div>
 
     <div class="card" v-if="detail.as_of_date || (compareIds.length && chartSeries.length)">
-      <TrendChart :series="chartSeries" :percent="normalize === 1"
-                  :unit="normalize === 1 ? null : detail.unit"
+      <TrendChart :series="chartSeries" :percent="useUnified && normalize === 1"
+                  :unit="useUnified && normalize === 1 ? null : detail.unit"
                   :update-options="{ notMerge: true }" />
     </div>
     <div class="card empty" v-else>数据累积中，暂无历史序列</div>

@@ -9,10 +9,16 @@ const props = defineProps({
 const emit = defineEmits(["update:modelValue", "added"]);
 const picking = ref(false);
 const allSources = ref([]);
+const pickerError = ref("");
 
 async function loadSources() {
-  if (!allSources.value.length)
+  if (allSources.value.length) return;
+  try {
     allSources.value = (await api.sources()).flatMap(g => g.sources);
+    pickerError.value = "";
+  } catch (e) {
+    pickerError.value = e?.message ?? String(e);
+  }
 }
 
 async function openPicker() {
@@ -41,7 +47,7 @@ const remove = (sid) =>
 // chip 显示 name（value 仍是 sid）；allSources 未加载时回退显示 sid
 const nameOf = (sid) => allSources.value.find(s => s.id === sid)?.name ?? sid;
 // 父组件预置 modelValue（非经 picker 添加）时也拉一次 sources 以补 name
-onMounted(() => { if (props.modelValue.length) loadSources().catch(() => {}); });
+onMounted(() => { if (props.modelValue.length) loadSources(); });
 </script>
 
 <template>
@@ -51,10 +57,13 @@ onMounted(() => { if (props.modelValue.length) loadSources().catch(() => {}); })
     </span>
     <span class="chip add-btn" @click="openPicker">+ 添加对比 ▾</span>
     <div v-if="picking" class="picker">
-      <div v-if="!candidates.length" class="picker-empty">没有可添加的数据源</div>
-      <div v-for="c in candidates" :key="c.id" class="picker-item" @click="add(c.id)">
-        {{ c.name }} <span class="picker-unit">{{ c.unit }}</span>
-      </div>
+      <div v-if="pickerError" class="picker-empty">数据源列表加载失败：{{ pickerError }}</div>
+      <template v-else-if="candidates.length">
+        <div v-for="c in candidates" :key="c.id" class="picker-item" @click="add(c.id)">
+          {{ c.name }} <span class="picker-unit">{{ c.unit }}</span>
+        </div>
+      </template>
+      <div v-else class="picker-empty">没有可添加的数据源</div>
     </div>
   </div>
 </template>
