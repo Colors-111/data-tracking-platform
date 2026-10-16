@@ -1111,10 +1111,12 @@ FROM python:3.12-slim
 COPY --from=ghcr.io/astral-sh/uv:0.13.1 /uv /uvx /usr/local/bin/
 RUN apt-get update && apt-get install -y --no-install-recommends tzdata \
     && rm -rf /var/lib/apt/lists/*
-ENV TZ=Asia/Shanghai PYTHONUNBUFFERED=1 UV_PROJECT_ENVIRONMENT=/app/.venv
+ENV TZ=Asia/Shanghai PYTHONUNBUFFERED=1 UV_PROJECT_ENVIRONMENT=/app/.venv UV_CACHE_DIR=/tmp/uv-cache
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen
+# 构建期缓存放独立路径（root 写入不进运行期 ENV 路径）；运行期 /tmp/uv-cache
+# 由容器 user(1000) 首次运行时创建，避免 root 属主目录卡死非 root 运行
+RUN UV_CACHE_DIR=/tmp/uv-build-cache uv sync --frozen
 COPY backend/ backend/
 COPY --from=fe /fe/dist/ frontend/dist/
 EXPOSE 8000
@@ -1157,6 +1159,7 @@ services:
   collect:
     build: .
     volumes: ["./data:/app/data"]
+    user: "1000:1000"
     environment:
       - TZ=Asia/Shanghai
       - DB_PATH=/app/data/dtp.db
@@ -1301,7 +1304,10 @@ ExecStart=/usr/bin/curl -s -X POST ${WEBHOOK_URL} \
 ## 快速开始（内网部署）
 
 ```bash
-# 1) （可选）配置告警 webhook：项目根创建 .env，写一行 WEBHOOK_URL=https://...
+# 1) 前置：要求部署用户 uid=1000（compose 固定 user: "1000:1000"）。
+#    全新机器先 `mkdir -p data`（避免 Docker daemon 以 root 创建挂载源目录）；
+#    若 data/ 已被 root 污染：`sudo chown -R 1000:1000 data/`
+# （可选）配置告警 webhook：项目根创建 .env，写一行 WEBHOOK_URL=https://...
 
 # 2) 构建镜像（API 服务随 Task 11 上线后 docker compose up -d web 即可用；
 #    在此之前 up web 会因 main.py 未实现而重启循环，属预期）
