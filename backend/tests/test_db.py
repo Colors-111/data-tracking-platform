@@ -1,3 +1,10 @@
+import sqlite3
+
+import pytest
+
+from backend.app import db
+
+
 def test_init_db_creates_schema(conn):
     tables = {r["name"] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
@@ -26,3 +33,15 @@ def test_observation_unique_upsert(conn):
     row = conn.execute(
         "SELECT value FROM observations WHERE instrument_id='510300'").fetchone()
     assert row["value"] == 101.0  # 唯一键冲突走 OR REPLACE，行数不变
+    assert conn.execute("SELECT COUNT(*) c FROM observations").fetchone()["c"] == 1
+
+
+def test_observation_fk_enforced(conn):
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO observations VALUES('nope','share','2026-01-01',1,NULL,'t')")
+
+
+def test_init_db_idempotent(conn):
+    db.init_db(conn)
+    assert conn.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"] == 3
