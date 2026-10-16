@@ -720,7 +720,6 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from .app.db import connect, init_db
 from .fetchers.base import build_fetcher
 from . import fetchers  # noqa: F401 触发注册
-from .notify import send_summary
 
 log = logging.getLogger("collect")
 
@@ -830,6 +829,7 @@ def main(argv=None):
                 "SELECT * FROM instruments WHERE source_id=? ORDER BY sort_order",
                 (s["id"],)).fetchall()
             results.append(run_source(conn, s, insts, args.date))
+        from .notify import send_summary  # 延迟导入（notify 随 Task 8 落地后可上移到模块顶部）
         send_summary(results)
         bad = [r for r in results if r["status"] != "ok"]
         log.info("完成：%d 源，%d 异常", len(results), len(bad))
