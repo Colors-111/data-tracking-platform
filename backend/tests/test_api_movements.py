@@ -46,6 +46,18 @@ def test_movements_desc_by_abs_pct(client, conn):
     assert [m["instrument_id"] for m in items] == ["510300", "510310"]
 
 
+def test_movements_empty_db(client):
+    body = client.get("/api/movements").json()
+    assert body == {"as_of_date": None, "movements": []}
+
+
+def test_movements_date_param_path(client, seeded):
+    # date 参数取历史时点：10-15 行不入榜（未来于该时点）
+    body = client.get("/api/movements?date=2026-10-14").json()
+    assert body["as_of_date"] == "2026-10-14"
+    assert body["movements"] == []   # 10-14 时 510300 只有 100 一个点，无 prev
+
+
 def test_jobs_latest(client, conn):
     conn.execute("INSERT INTO job_runs(source_id,trade_date,status,rows,error,started_at,finished_at)"
                  " VALUES('hs300-etf','2026-10-15','ok',5,NULL,'t','t')")
