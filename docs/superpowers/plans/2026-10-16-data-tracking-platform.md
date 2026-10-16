@@ -1055,18 +1055,18 @@ def render_summary(results: list[dict]) -> str:
         if r.get("error"):
             line += f" — {str(r['error'])[:120]}"
         lines.append(line)
-    text = "\n".join(lines)
-    if len(text.encode("utf-8")) > 1800:   # 企微 text 上限 2048 字节，超限整条被拒
-        text = text.encode("utf-8")[:1800].decode("utf-8", "ignore") + "\n…(截断)"
-    return text
+    return "\n".join(lines)
 
 def send_summary(results: list[dict]) -> None:
     url = os.environ.get("WEBHOOK_URL")
     if not url or not results:
         return
+    content = render_summary(results)
+    if len(content.encode("utf-8")) > 1800:   # 企微 text 上限 2048 字节，超限整条被拒
+        content = content.encode("utf-8")[:1800].decode("utf-8", "ignore")
     try:
         resp = httpx.post(url, json={"msgtype": "text",
-                                     "text": {"content": render_summary(results)}},
+                                     "text": {"content": content}},
                           timeout=10)
         body = resp.json() if resp.status_code == 200 else {}
         if resp.status_code != 200 or body.get("errcode") not in (0, None):
