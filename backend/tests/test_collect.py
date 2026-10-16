@@ -133,3 +133,17 @@ def test_backup_database_creates_snapshot_and_rotates(conn, fake_source, monkeyp
     C.backup_database(conn)
     remaining = sorted(p.name for p in bdir.glob("dtp-*.db"))
     assert len(remaining) == 30 and "dtp-2020-01-01.db" not in remaining  # 滚动保留 30 份
+
+def test_main_backup_gate(conn, fake_source, monkeypatch):
+    """备份门控契约：main() 全成功备份 1 次；failed 不备份（0 次）。"""
+    monkeypatch.setattr(C, "connect", lambda: conn)
+    monkeypatch.setattr(C, "fetch_with_retry", lambda f, d: f.fetch(d))  # 跳过重试等待
+    monkeypatch.delenv("WEBHOOK_URL", raising=False)   # send_summary 无 webhook 时静默跳过
+    calls = []
+    monkeypatch.setattr(C, "backup_database", lambda c: calls.append(c))
+    assert C.main(["--source", "fake"]) == 0
+    assert len(calls) == 1          # 全成功 → 备份 1 次
+    calls.clear()
+    conn.execute("UPDATE sources SET fetcher='fake.boom' WHERE id='fake'"); conn.commit()
+    assert C.main(["--source", "fake"]) == 1
+    assert len(calls) == 0          # failed → 不备份

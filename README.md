@@ -19,6 +19,12 @@ docker compose run --rm collect uv run --no-sync python -m backend.collect \
   --backfill --from 2015-01-01
 
 # 4) 定时采集（宿主机 systemd；要求宿主机时区为 Asia/Shanghai）
+#    前置：项目需已放置在 /opt/dtp（git clone 或 rsync）；
 sudo cp deploy/systemd/* /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now data-collect.timer
+
+# 5) 运维速查
+systemctl list-timers data-collect.timer   # 看下次触发时间
+journalctl -u data-collect.service -f      # 看采集日志
+# 备份在 data/backups/，恢复 = 停服务后用备份文件覆盖 data/dtp.db
 ```

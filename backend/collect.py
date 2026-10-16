@@ -180,7 +180,11 @@ def main(argv=None):
     # 仅 failed 非零退出（触发 systemd OnFailure 崩溃告警）；
     # empty/stale 属数据质量事件，经 job_runs 与 Task 8 的汇总 webhook 报告，不算崩溃
     if not bad:
-        backup_database(conn)   # 设计 §6：全部成功后备份，保留 30 天
+        try:
+            backup_database(conn)   # 设计 §6：全部成功后备份，保留 30 天
+        except Exception:
+            # 备份失败只告警不改 rc——否则会被当成"采集崩溃"触发 OnFailure 误告警
+            log.warning("数据库备份失败", exc_info=True)
     log.info("完成：%d 源，failed=%d empty/stale=%d", len(results), len(bad),
              sum(1 for r in results if r["status"] in ("empty", "stale")))
     return 1 if bad else 0
