@@ -6,7 +6,9 @@ INSERT OR IGNORE INTO sources(id,name,group_name,freq,fetcher,unit,movement_th,l
  ('star50-etf','科创50 ETF','指数 ETF','daily','akshare.etf_scale','亿份',1.0,1,1,11),
  ('chinext-etf','创业板 ETF','指数 ETF','daily','akshare.etf_scale','亿份',1.0,1,1,12),
  ('dividend-etf','红利 ETF','指数 ETF','daily','akshare.etf_scale','亿份',1.0,1,1,13),
- ('a500-etf','中证A500 ETF','指数 ETF','daily','akshare.etf_scale','亿份',1.0,1,1,14);
+ ('a500-etf','中证A500 ETF','指数 ETF','daily','akshare.etf_scale','亿份',1.0,1,1,14),
+ ('sse50-etf','上证50 ETF','指数 ETF','daily','akshare.sse_etf_scale','亿份',1.0,1,1,15),
+ ('zz1000-etf','中证1000 ETF','指数 ETF','daily','akshare.etf_scale','亿份',1.0,1,1,16);
 
 INSERT OR IGNORE INTO instruments(id,source_id,code,metric,name,sort_order) VALUES
  ('510300','hs300-etf','510300','share','沪深300ETF华泰柏瑞',1),
@@ -34,7 +36,11 @@ INSERT OR IGNORE INTO instruments(id,source_id,code,metric,name,sort_order) VALU
  ('515080','dividend-etf','515080','share','中证红利ETF',5),
  ('159352','a500-etf','159352','share','A500ETF南方',1),
  ('159361','a500-etf','159361','share','A500ETF易方达',2),
- ('159338','a500-etf','159338','share','中证A500ETF国泰',3);
+ ('159338','a500-etf','159338','share','中证A500ETF国泰',3),
+ ('510050','sse50-etf','510050','share','上证50ETF华夏',1),
+ ('512100','zz1000-etf','512100','share','中证1000ETF南方',1),
+ ('560010','zz1000-etf','560010','share','1000基金华泰柏瑞',2),
+ ('159845','zz1000-etf','159845','share','中证1000ETF广发',3);
 
 -- ============ v1.2 商品组源（铜/铝/氧化铝/黄金） ============
 -- 每商品一个 source，内含多个不同 metric 的 instruments（价格/库存/仓单/资金），

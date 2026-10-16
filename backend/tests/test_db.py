@@ -16,8 +16,8 @@ def test_wal_mode(conn):
 
 
 def test_seed_loaded(conn):
-    # 8 原有源 - cu-inventory（并入铜组后删除独立源行）+ 4 商品组源（copper/aluminum/alumina/gold）
-    assert conn.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"] == 11
+    # 8 原有源 - cu-inventory（并入铜组后删除独立源行）+ 4 商品组源 + sse50/zz1000 扩容
+    assert conn.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"] == 13
     assert conn.execute(
         "SELECT COUNT(*) c FROM sources WHERE id='cu-inventory'"
     ).fetchone()["c"] == 0   # 独立源行删除：执行器不再单独跑它
@@ -105,7 +105,7 @@ def test_unit_migration_on_legacy_db(tmp_path):
     row = c.execute(
         "SELECT source_id, unit FROM instruments WHERE id='cu-inventory'").fetchone()
     assert (row["source_id"], row["unit"]) == ("copper", "吨")
-    assert c.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"] == 11
+    assert c.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"] == 13
     c.close()
 
 
@@ -128,4 +128,4 @@ def test_observation_fk_enforced(conn):
 
 def test_init_db_idempotent(conn):
     db.init_db(conn)
-    assert conn.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"] == 11
+    assert conn.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"] == 13
