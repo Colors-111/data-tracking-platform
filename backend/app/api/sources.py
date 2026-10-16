@@ -36,7 +36,10 @@ def source_detail(sid: str, range: str = Query("3m"), conn=Depends(get_conn)):
     if not as_of:
         return {"id": sid, "name": src["name"], "unit": src["unit"],
                 "as_of_date": None, "cards": [], "series": {}}
-    day_filter = f"AND o.trade_date >= date('{as_of}', '-{days} days')" if days else ""
+    # as_of 源自库内 trade_date（上游外部数据），必须绑参——防上游构造词典序居大的注入串；
+    # days 来自 RANGE_DAYS 白名单 int，可内插
+    day_filter = f"AND o.trade_date >= date(?, '-{days} days')" if days else ""
+    params = (sid, as_of) if days else (sid,)
     rows = conn.execute(
         f"""SELECT o.instrument_id, o.trade_date, o.value,
                    FIRST_VALUE(o.value) OVER w AS first_v,
@@ -48,7 +51,7 @@ def source_detail(sid: str, range: str = Query("3m"), conn=Depends(get_conn)):
              WINDOW w AS (PARTITION BY o.instrument_id ORDER BY o.trade_date),
                     w2 AS (PARTITION BY o.instrument_id ORDER BY o.trade_date DESC)
              ORDER BY o.instrument_id, o.trade_date""",
-        (sid,)).fetchall()
+        params).fetchall()
     cards, series = [], {}
     by_inst: dict[str, list] = {}
     for r in rows:

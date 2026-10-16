@@ -2,7 +2,7 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -32,6 +32,9 @@ if FE_DIR.exists():
 
     @app.get("/{path:path}")
     def spa(path: str):
+        # 未知 API 路径返回 404——否则前端 fetch 写错 URL 拿到 HTML 200，静默失败难排查
+        if path.startswith("api/"):
+            raise HTTPException(404)
         f = (FE_DIR / path).resolve()
         # 防 path traversal：解析后必须仍在 FE_DIR 内，否则回落 index.html
         if path and f.is_file() and f.is_relative_to(FE_DIR.resolve()):
