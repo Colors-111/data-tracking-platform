@@ -92,9 +92,8 @@ CREATE TABLE observations (
   value         REAL,
   raw_json      TEXT,                    -- 原始返回留档，防口径变化
   fetched_at    TEXT NOT NULL,
-  UNIQUE(instrument_id, metric, trade_date)
+  UNIQUE(instrument_id, metric, trade_date)   -- UNIQUE 自动索引即序列查询索引，无需另建
 );
-CREATE INDEX idx_obs_series ON observations(instrument_id, metric, trade_date);
 
 -- 抓取状态：驱动总览页状态条与告警
 CREATE TABLE job_runs (

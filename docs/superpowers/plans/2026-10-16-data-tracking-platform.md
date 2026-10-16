@@ -186,10 +186,8 @@ CREATE TABLE IF NOT EXISTS observations (
   value REAL,
   raw_json TEXT,
   fetched_at TEXT NOT NULL,
-  UNIQUE(instrument_id, metric, trade_date)
+  UNIQUE(instrument_id, metric, trade_date)   -- UNIQUE 自动建索引，无需再建
 );
-CREATE INDEX IF NOT EXISTS idx_obs_series
-  ON observations(instrument_id, metric, trade_date);
 CREATE TABLE IF NOT EXISTS job_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   source_id TEXT,
@@ -219,8 +217,8 @@ def connect(path=None) -> sqlite3.Connection:
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     seed = Path(__file__).resolve().parent.parent / "seed.sql"
-    if seed.exists():
-        conn.executescript(seed.read_text(encoding="utf-8"))
+    # seed 缺失必须 fail-loud（静默跳过会产出空注册表）
+    conn.executescript(seed.read_text(encoding="utf-8"))
     conn.commit()
 ```
 
