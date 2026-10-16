@@ -12,6 +12,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from .app.db import connect, init_db
 from .fetchers.base import build_fetcher
+from .notify import send_summary
 from . import fetchers  # noqa: F401 触发注册
 
 log = logging.getLogger("collect")
@@ -55,6 +56,7 @@ def previous_trade_date(run_date: str, n: int = 1) -> str:
     """run_date 之前第 n 个交易日（lag_days 语义）；日历不可用降级为第 n 个工作日。"""
     days = _trade_days()
     if not days:
+        log.warning("交易日历不可用，按工作日推算目标日")
         d = dt.date.fromisoformat(run_date)
         for _ in range(n):
             d -= dt.timedelta(days=1)
@@ -155,7 +157,6 @@ def main(argv=None):
             "SELECT * FROM instruments WHERE source_id=? ORDER BY sort_order",
             (s["id"],)).fetchall()
         results.append(run_source(conn, s, insts, args.date))
-    from .notify import send_summary  # 延迟导入（notify 随 Task 8 落地后可上移到模块顶部）
     send_summary(results)
     bad = [r for r in results if r["status"] == "failed"]
     # 仅 failed 非零退出（触发 systemd OnFailure 崩溃告警）；
