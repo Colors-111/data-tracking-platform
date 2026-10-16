@@ -20,7 +20,7 @@ def client(conn, tmp_path, monkeypatch):
 def cross_source(conn):
     # 510300(share) 与 coal-price(price)，量纲不同
     for iid, d, v in [("510300", "2026-10-13", 100), ("510300", "2026-10-14", 110), ("510300", "2026-10-15", 120),
-                      ("coal-price", "2026-10-13", 800), ("coal-price", "2026-10-14", 820), ("coal-price", "2026-10-15", 880)]:
+                      ("coal-price", "2026-10-13", 800), ("coal-price", "2026-10-14", 820), ("coal-price", "2026-10-15", 780)]:
         conn.execute("INSERT INTO observations VALUES(?,?,?,?,NULL,'t')",
                      (iid, "share" if iid.startswith("5") else "price", d, v))
     conn.commit()
@@ -41,7 +41,7 @@ def test_series_normalized_to_100(client, cross_source):
     hs = next(s for s in body["series"] if s["instrument_id"] == "510300")
     assert hs["points"][-1][1] == pytest.approx(120.0)
     coal = next(s for s in body["series"] if s["instrument_id"] == "coal-price")
-    assert coal["points"][-1][1] == pytest.approx(110.0)
+    assert coal["points"][-1][1] == pytest.approx(97.5)  # 780/800*100——尾点跌破基线的负增长路径（510300 为上涨端点 120.0）
 
 
 def test_series_expands_source_id(client, cross_source):

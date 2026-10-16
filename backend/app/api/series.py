@@ -38,10 +38,12 @@ def series(instruments: str = Query(""), normalize: int = 0,
         sql = f"""SELECT instrument_id, trade_date, value,
                          FIRST_VALUE(value) OVER (PARTITION BY instrument_id ORDER BY trade_date) base
                     FROM observations
-                   WHERE instrument_id IN ({ph}) AND value IS NOT NULL {where_days}"""
+                   WHERE instrument_id IN ({ph}) AND value IS NOT NULL {where_days}
+                   ORDER BY instrument_id, trade_date"""
         raw = conn.execute(sql, params).fetchall()
         grouped: dict[str, list] = {}
         for r in raw:
+            # base=0（除零防护；期初=0 归一化无定义 → 丢弃该序列）；NULL 首日已被 WHERE value IS NOT NULL 排除，基线自动顺延至首个非空值
             if not r["base"]:
                 continue
             grouped.setdefault(r["instrument_id"], []).append(
@@ -49,7 +51,8 @@ def series(instruments: str = Query(""), normalize: int = 0,
     else:
         raw = conn.execute(
             f"""SELECT instrument_id, trade_date, value FROM observations
-                 WHERE instrument_id IN ({ph}) {where_days} ORDER BY trade_date""",
+                 WHERE instrument_id IN ({ph}) {where_days}
+                 ORDER BY instrument_id, trade_date""",
             params).fetchall()
         grouped = {}
         for r in raw:
