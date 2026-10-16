@@ -6,14 +6,17 @@
    - LME-{CU,AL}-POS             → LmeHoldingFetcher（positioning）
    - CFTC-AU                     → CftcNcFetcher（positioning，周频）
    - GOLD-RESERVE                → GoldReserveFetcher（reserve，月频锚月末）
-   - AU9999 → SgeSpotFetcher、XAU → LondonSpotFetcher：并行任务落地中的
-     可选分支——类名延迟解析（可注入），缺失时 log.warning 跳过、不 fail
-     （伦敦金接口由对方负责，类落地后自动接入）
+   - AU9999 → SgeSpotFetcher、XAU → LondonSpotFetcher：现货分支（可注入，
+     类缺失时 log.warning 跳过、不 fail）
+   - 小写 'cu'/'al'/'ao' → FuturesInventoryFetcher（东财库存，metric='inventory'；
+     回归修复：cu-inventory 迁入铜组后由此分支续供，接口仅留近 60 日）
+   - 6 位数字 code → EtfScaleFetcher（上交所份额快照；metric 'share' 重映射为
+     instruments 行的 'holding'——黄金 ETF 持仓=份额，语义等价）
 
    契约（对齐既有 composite 三支）：各分支观测合并返回；任一分支异常整体抛
    （源级原子）；无成分的分支短路、不触接口；全部分支空 → []。
-   未识别 code（如 gold 源上的 ETF 份额 518880——采集路径待定）：不致命、
-   无观测、告警留痕，保持既有静默语义但可观测。
+   未识别 code（家族表之外的任意串）：不致命、无观测、告警留痕，
+   保持既有静默语义但可观测。
 
    打桩方式：composite 与 akshare_macro 的 `import akshare as ak` 指向同一
    模块对象，直接在 akshare 模块属性上打桩即可同时覆盖两侧分支。"""
@@ -61,6 +64,21 @@ GOLD_RESERVE_DF = pd.DataFrame([
     {"统计时间": "2026.9", "黄金储备": 7747.0},
     {"统计时间": "2025.10", "黄金储备": 7466.0},
 ])
+INVENTORY_DF = pd.DataFrame([
+    {"日期": "2026-10-15", "库存": 65421.0, "增减": -591.0},
+    {"日期": "2026-10-14", "库存": 66012.0, "增减": 120.0},
+])
+ETF_SNAPSHOT_DF = pd.DataFrame([
+    {"代码": "518880", "基金简称": "华安黄金ETF", "份额": 8930000000.0},
+    {"代码": "518800", "基金简称": "国泰黄金ETF", "份额": 2200000000.0},
+    {"代码": "518660", "基金简称": "博时黄金ETF", "份额": 1500000000.0},
+    {"代码": "510300", "基金简称": "沪深300ETF", "份额": 90000000000.0},
+])
+GOLD_ETF_INSTS = [
+    {"id": "au-etf-518880", "code": "518880", "metric": "holding"},
+    {"id": "au-etf-518800", "code": "518800", "metric": "holding"},
+    {"id": "au-etf-518660", "code": "518660", "metric": "holding"},
+]
 
 
 def stub_interfaces(monkeypatch, **overrides):
@@ -73,6 +91,8 @@ def stub_interfaces(monkeypatch, **overrides):
         "macro_euro_lme_holding": LME_HOLDING_DF,
         "macro_usa_cftc_c_holding": CFTC_DF,
         "macro_china_foreign_exchange_gold": GOLD_RESERVE_DF,
+        "futures_inventory_em": INVENTORY_DF,
+        "fund_etf_scale_sse": ETF_SNAPSHOT_DF,
     }
     defaults.update(overrides)
     calls = {}
@@ -175,7 +195,7 @@ def test_sge_and_london_delegated_when_classes_present(monkeypatch):
     assert built == [("sge", ["AU9999"]), ("london", ["XAU"])]
     assert {(o.instrument_id, o.value) for o in obs} == {
         ("au-sge-price", 999.0), ("au-london-price", 999.0)}
-    # 无其他成分 → 既有七接口全未触（分支短路）
+    # 无其他成分 → 打桩接口全未触（分支短路）
     assert all(not p for p in calls.values())
 
 
@@ -189,6 +209,68 @@ def test_missing_optional_class_warns_and_skips(monkeypatch, caplog):
     obs = f.fetch("2026-10-15")
     assert {o.instrument_id for o in obs} == {"au-shfe-price"}
     assert "LondonSpotFetcher" in caplog.text
+
+
+# ---------- 库存分支（回归修复）+ ETF 持仓分支（metric 重映射） ----------
+
+def test_copper_inventory_branch_delegated_and_merged(monkeypatch):
+    # 回归修复：cu-inventory 迁入铜组后 code 'cu' 曾无分支断更——委托东财库存
+    insts = COPPER_INSTS + [{"id": "cu-inventory", "code": "cu",
+                             "metric": "inventory"}]
+    f, calls = build(monkeypatch, insts)
+    obs = f.fetch("2026-10-15")
+    got = keyed(obs)
+    assert got["cu-inventory", "2026-10-15", "inventory"] == pytest.approx(65421.0)
+    assert got["cu-inventory", "2026-10-14", "inventory"] == pytest.approx(66012.0)
+    # 既有分支不回归
+    assert got["cu-shfe-price", "2026-10-16", "price"] == pytest.approx(886.48)
+    assert got["cu-lme-stock", "2026-07-17", "inventory"] == pytest.approx(296625.0)
+    # em 接口以 instruments 行 code 作 symbol，恰调一次
+    assert calls["futures_inventory_em"] == [((), {"symbol": "cu"})]
+
+
+def test_al_ao_inventory_routes_same_branch(monkeypatch):
+    al = [{"id": "al-shfe-price", "code": "AL0", "metric": "price"},
+          {"id": "al-inventory", "code": "al", "metric": "inventory"}]
+    f, calls = build(monkeypatch, al)
+    got = keyed(f.fetch("2026-10-15"))
+    assert got["al-inventory", "2026-10-15", "inventory"] == pytest.approx(65421.0)
+    assert got["al-shfe-price", "2026-10-16", "price"] == pytest.approx(886.48)
+    assert calls["futures_inventory_em"] == [((), {"symbol": "al"})]
+
+
+def test_etf_holding_branch_metric_remapped(monkeypatch):
+    # ETF 份额快照：6 位数字 code 走 EtfScaleFetcher 上交所分支，
+    # 产出 metric 'share' 重映射为 instruments 行的 'holding'
+    insts = [{"id": "au-shfe-price", "code": "AU0", "metric": "price"}] \
+        + GOLD_ETF_INSTS
+    f, calls = build(monkeypatch, insts, fund_scale_daily_szse=pd.DataFrame())
+    obs = f.fetch("2026-10-15")
+    got = keyed(obs)
+    assert got["au-etf-518880", "2026-10-15", "holding"] == pytest.approx(89.3)
+    assert got["au-etf-518800", "2026-10-15", "holding"] == pytest.approx(22.0)
+    assert got["au-etf-518660", "2026-10-15", "holding"] == pytest.approx(15.0)
+    assert all(o.metric == "holding" for o in obs if o.instrument_id.startswith("au-etf"))
+    # 份额→亿份 ÷1e8；基金简称 raw 元数据随观测保留
+    raw = {o.instrument_id: o.raw for o in obs if o.instrument_id.startswith("au-etf")}
+    assert raw["au-etf-518880"] == {"name": "华安黄金ETF"}
+    # 快照中未注册行（510300）被过滤；深交所分支未触
+    assert len(calls["fund_etf_scale_sse"]) == 1
+    assert calls["fund_scale_daily_szse"] == []
+    # 同源其他分支不回归
+    assert got["au-shfe-price", "2026-10-16", "price"] == pytest.approx(886.48)
+
+
+def test_inventory_branch_failure_propagates(monkeypatch):
+    # 源级原子：新分支异常同样整体抛
+    def boom(**k):
+        raise RuntimeError("em down")
+
+    f, _ = build(monkeypatch,
+                 [{"id": "cu-inventory", "code": "cu", "metric": "inventory"}],
+                 futures_inventory_em=boom)
+    with pytest.raises(RuntimeError):
+        f.fetch("2026-10-15")
 
 
 # ---------- 原子性 / 短路 / 未识别 code ----------
@@ -219,11 +301,10 @@ def test_macro_only_source_short_circuits_other_interfaces(monkeypatch):
 
 
 def test_unmatched_code_warns_and_yields_nothing(monkeypatch, caplog):
-    # 未识别 code（如 gold 源上的 ETF 份额 518880，采集路径待定）：
-    # 不致命、无观测、告警留痕
+    # 未识别 code（家族表之外的任意串）：不致命、无观测、告警留痕
     f, calls = build(monkeypatch,
-                     [{"id": "518880", "code": "518880",
-                       "metric": "holding"}])
+                     [{"id": "weird-inst", "code": "XX-UNKNOWN",
+                       "metric": "price"}])
     assert f.fetch("2026-10-15") == []
     assert all(not p for p in calls.values())   # 不触任何接口
-    assert "518880" in caplog.text
+    assert "XX-UNKNOWN" in caplog.text

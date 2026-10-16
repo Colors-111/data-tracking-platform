@@ -33,17 +33,25 @@
    - code 'AU9999' / 'XAU'              → SgeSpotFetcher / LondonSpotFetcher：
      可选分支，类名延迟解析（getattr），类未落地时 log.warning 跳过、不 fail
      （SGE/伦敦金现货由并行增量负责，类落地后自动接入）
+   - code 小写 'cu'/'al'/'ao'           → FuturesInventoryFetcher（东财库存，
+     metric='inventory'；回归修复——cu-inventory 迁入铜组后由此续供，接口仅留
+     近 60 个交易日，依赖每日全量 upsert 累积历史）
+   - code 6 位数字                      → EtfScaleFetcher（上交所份额快照分支；
+     产出 metric 'share' 重映射为 instruments 行配置——黄金 ETF 持仓=份额，
+     语义等价，seed 不动）
 
    编排契约（对齐既有三支）：各分支观测合并返回；任一分支异常整体抛（源级
    原子）；子 fetcher 在构建期解析 targets（校验 code，fail-loud）但不触接口
-   ——无成分的分支照旧短路、全部分支空 → []。未识别 code（如 gold 源上的
-   ETF 份额 518880，采集路径待定）：不致命、无观测、log.warning 留痕。"""
+   ——无成分的分支照旧短路、全部分支空 → []。未识别 code（家族表之外的
+   任意 code）：不致命、无观测、log.warning 留痕。"""
 import logging
 
 import akshare as ak
 import pandas as pd
 
 from . import akshare_macro as _macro
+from .akshare_cu_inventory import FuturesInventoryFetcher
+from .akshare_etf_scale import EtfScaleFetcher
 from ._util import col, normalize_date
 from .akshare_macro import (
     CftcNcFetcher,
@@ -62,12 +70,35 @@ SPOT_VARS = ("CU", "AL", "AO")                         # 生意社现货品种
 WARRANT_KEYS = {"CU": ("铜",), "AL": ("铝",),
                 "AO": ("氧化铝仓库", "氧化铝厂库"), "AU": ("黄金",)}
 
-# 宏观/贵金属分支（编排化）：code 家族 → akshare_macro 子 fetcher 类。
-# 子 fetcher 构建期即解析 targets 并校验 code（fail-loud），seed 拼错当场暴露。
-_MACRO_SUBS = {"lme_stock": LmeStockFetcher, "lme_holding": LmeHoldingFetcher,
-               "cftc": CftcNcFetcher, "reserve": GoldReserveFetcher}
-# 可选现货分支：类由并行增量落地于 akshare_macro，按类名延迟解析——
-# 缺失时 log.warning 跳过该分支、不 fail（类落地后自动接入）
+# 小写东财库存 code（futures_inventory_em 的品种 symbol；与 SPOT_VARS 大写相区分）
+_INVENTORY_CODES = ("cu", "al", "ao")
+
+
+class _HoldingEtfFetcher(EtfScaleFetcher):
+    """ETF 份额快照委托（不注册）：EtfScaleFetcher 观测 metric 硬编码 'share'，
+       而黄金组 seed 的 ETF 持仓 metric='holding'——语义等价（黄金 ETF 持仓=份
+       额），产出后按 instruments 行 metric 重映射，raw 元数据（基金简称）保留。"""
+
+    def __init__(self, source, instruments):
+        super().__init__(source, instruments)
+        self._metrics = {i["id"]: i["metric"] for i in instruments if i["metric"]}
+
+    def fetch(self, trade_date: str) -> list[Observation]:
+        out = []
+        for o in super().fetch(trade_date):
+            m = self._metrics.get(o.instrument_id)
+            out.append(o if m is None or m == o.metric
+                       else Observation(o.instrument_id, m, o.trade_date,
+                                        o.value, o.raw))
+        return out
+
+
+# 委托分支映射（编排化）：code 家族 → 子 fetcher 类。子 fetcher 构建期即解析
+# targets 并校验 code（fail-loud），seed 拼错当场暴露。
+_SUBS = {"lme_stock": LmeStockFetcher, "lme_holding": LmeHoldingFetcher,
+         "cftc": CftcNcFetcher, "reserve": GoldReserveFetcher,
+         "inventory": FuturesInventoryFetcher, "etf": _HoldingEtfFetcher}
+# 可选现货分支：类名延迟解析（getattr）——缺失时 log.warning 跳过、不 fail
 _OPTIONAL_SPOT_SUBS = {"AU9999": "SgeSpotFetcher", "XAU": "LondonSpotFetcher"}
 
 DAILY_DATE_CANDIDATES = ["date", "日期"]
@@ -90,8 +121,8 @@ def warrant_total(df) -> float:
 
 
 def _family(code) -> str | None:
-    """instrument code → 分支家族名：'shfe' 走 fetch() 内既有三支分流；宏观四支
-       返回 _MACRO_SUBS 键；可选现货返回类名（延迟解析）；None = 未识别（告警跳过）。"""
+    """instrument code → 分支家族名：'shfe' 走 fetch() 内既有三支分流；其余返回
+       _SUBS 键；可选现货返回类名（延迟解析）；None = 未识别（告警跳过）。"""
     c = code or ""
     if (c in SHFE_DAILY_CODES or c in SPOT_VARS
             or (c.endswith("-WARRANT") and not c.startswith("LME-"))):
@@ -106,6 +137,10 @@ def _family(code) -> str | None:
         return "cftc"
     if c == "GOLD-RESERVE":
         return "reserve"
+    if c in _INVENTORY_CODES:
+        return "inventory"      # 东财库存（小写 symbol；cu-inventory 迁移回归修复）
+    if len(c) == 6 and c.isdigit():
+        return "etf"            # ETF 份额快照（黄金组 518880/518800/518660 等）
     return None
 
 
@@ -126,8 +161,8 @@ class CommodityCompositeFetcher:
             fam = _family(i["code"])
             if fam is None:
                 if i["code"]:
-                    # 未识别 code（如 gold 源的 ETF 份额 518880，采集路径待定）：
-                    # 不致命、无观测、告警留痕（保持既有静默语义但可观测）
+                    # 未识别 code（家族表之外）：不致命、无观测、告警留痕
+                    # （保持既有静默语义但可观测）
                     log.warning("composite 未识别的仪器代码，成分暂不采集: id=%s code=%s",
                                 i["id"], i["code"])
                 continue
@@ -135,7 +170,7 @@ class CommodityCompositeFetcher:
                 groups.setdefault(fam, []).append(i)
         subs = []
         for fam, rows in groups.items():
-            cls = _MACRO_SUBS.get(fam) or getattr(_macro, fam, None)
+            cls = _SUBS.get(fam) or getattr(_macro, fam, None)
             if cls is None:
                 # 可选分支类未落地（SGE/伦敦金并行增量负责）：跳过不 fail，
                 # 类落地后自动接入
@@ -155,7 +190,7 @@ class CommodityCompositeFetcher:
         out = self._fetch_daily(daily) if daily else []
         out += self._fetch_spot(trade_date, d, spot) if spot else []
         out += self._fetch_warrants(trade_date, d, warrant) if warrant else []
-        for sub in self._subs:   # 宏观/贵金属分支委托合并；子分支异常整体抛（源级原子）
+        for sub in self._subs:   # 委托分支（宏观/库存/ETF/现货）合并；子分支异常整体抛（源级原子）
             out += sub.fetch(trade_date)
         return out
 
