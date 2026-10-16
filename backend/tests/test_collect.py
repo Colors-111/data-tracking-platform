@@ -7,7 +7,7 @@ from backend import collect as C
 def fake_source(conn):
     conn.execute("INSERT OR REPLACE INTO sources VALUES"
                  "('fake','假源','指数 ETF','daily','fake.ok','x',1.0,0,1,99)")
-    conn.execute("INSERT OR REPLACE INTO instruments VALUES"
+    conn.execute("INSERT OR REPLACE INTO instruments(id,source_id,code,metric,name,sort_order) VALUES"
                  "('f1','fake','F1','price','假品种',1)")
     conn.commit()
 
@@ -233,7 +233,7 @@ def test_backfill_force_refetches_for_new_instruments(conn, fake_source, monkeyp
     monkeypatch.setattr(C, "trade_dates_from_to", lambda a, b: ["2026-01-06"])
     conn.execute("INSERT INTO observations VALUES"
                  "('f1','price','2026-01-05',99.0,NULL,'2026-01-05T09:00:00')")  # 老成分已有
-    conn.execute("INSERT OR REPLACE INTO instruments VALUES"
+    conn.execute("INSERT OR REPLACE INTO instruments(id,source_id,code,metric,name,sort_order) VALUES"
                  "('f2','fake','F2','price','假品种2',2)")   # 种子扩充：源内新增成分
 
     @register("fake.newcomp")

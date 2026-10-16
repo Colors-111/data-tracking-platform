@@ -35,3 +35,51 @@ INSERT OR IGNORE INTO instruments(id,source_id,code,metric,name,sort_order) VALU
  ('159352','a500-etf','159352','share','A500ETF南方',1),
  ('159361','a500-etf','159361','share','A500ETF易方达',2),
  ('159338','a500-etf','159338','share','中证A500ETF国泰',3);
+
+-- ============ v1.2 商品组源（铜/铝/氧化铝/黄金） ============
+-- 每商品一个 source，内含多个不同 metric 的 instruments（价格/库存/仓单/资金），
+-- 混合单位 → instruments.unit 品种级单位；sources.unit='混合'（前端按 instrument.unit 显示）
+INSERT OR IGNORE INTO sources(id,name,group_name,freq,fetcher,unit,movement_th,lag_days,enabled,sort_order) VALUES
+ ('copper','铜','大宗商品','daily','akshare.composite','混合',1.0,1,1,20),
+ ('aluminum','铝','大宗商品','daily','akshare.composite','混合',1.0,1,1,21),
+ ('alumina','氧化铝','大宗商品','daily','akshare.composite','混合',1.0,1,1,22),
+ ('gold','黄金','大宗商品','daily','akshare.composite','混合',1.0,1,1,23);
+-- cu-inventory 并入铜组（instrument id 不变，观测无缝保留）
+INSERT INTO instruments(id,source_id,code,metric,unit,name,sort_order) VALUES
+ ('cu-inventory','copper','cu','inventory','吨','SHFE电解铜库存',3)
+ ON CONFLICT(id) DO UPDATE SET source_id='copper', unit='吨', name='SHFE电解铜库存', sort_order=3;
+DELETE FROM sources WHERE id='cu-inventory';   -- job_runs.source_id 无 FK，历史留痕不受影响
+-- 铜组其余品种（fetcher 由其他任务实现，akshare.composite 占位）
+INSERT OR IGNORE INTO instruments(id,source_id,code,metric,unit,name,sort_order) VALUES
+ ('cu-shfe-price','copper','CU0','price','元/吨','SHFE沪铜主力',1),
+ ('cu-spot-price','copper','CU','price','元/吨','现货铜价',2),
+ ('cu-warrant','copper','CU-WARRANT','warehouse','吨','SHFE铜仓单',4),
+ ('cu-lme-stock','copper','LME-CU-STOCK','inventory','吨','LME铜库存',5),
+ ('cu-lme-warrant','copper','LME-CU-WARRANT','warehouse','吨','LME铜注册仓单',6),
+ ('cu-lme-holding','copper','LME-CU-POS','positioning','张','LME铜净持仓',7),
+ ('cu-cftc','copper','CFTC-CU','positioning','手','CFTC铜非商业净多',8);
+-- 铝组
+INSERT OR IGNORE INTO instruments(id,source_id,code,metric,unit,name,sort_order) VALUES
+ ('al-shfe-price','aluminum','AL0','price','元/吨','SHFE沪铝主力',1),
+ ('al-spot-price','aluminum','AL','price','元/吨','现货铝价',2),
+ ('al-inventory','aluminum','al','inventory','吨','东财铝库存',3),
+ ('al-warrant','aluminum','AL-WARRANT','warehouse','吨','SHFE铝仓单',4),
+ ('al-lme-stock','aluminum','LME-AL-STOCK','inventory','吨','LME铝库存',5),
+ ('al-lme-warrant','aluminum','LME-AL-WARRANT','warehouse','吨','LME铝注册仓单',6),
+ ('al-lme-holding','aluminum','LME-AL-POS','positioning','张','LME铝净持仓',7);
+-- 氧化铝组
+INSERT OR IGNORE INTO instruments(id,source_id,code,metric,unit,name,sort_order) VALUES
+ ('ao-shfe-price','alumina','AO0','price','元/吨','SHFE氧化铝主力',1),
+ ('ao-spot-price','alumina','AO','price','元/吨','现货氧化铝价',2),
+ ('ao-inventory','alumina','ao','inventory','吨','东财氧化铝库存',3),
+ ('ao-warrant','alumina','AO-WARRANT','warehouse','吨','SHFE氧化铝仓单',4);
+-- 黄金组
+INSERT OR IGNORE INTO instruments(id,source_id,code,metric,unit,name,sort_order) VALUES
+ ('au-shfe-price','gold','AU0','price','元/克','SHFE沪金主力',1),
+ ('au-sge-price','gold','AU9999','price','元/克','SGE黄金现货',2),
+ ('au-warrant','gold','AU-WARRANT','warehouse','千克','SHFE黄金仓单',3),
+ ('au-reserve','gold','GOLD-RESERVE','reserve','万盎司','央行黄金储备',4),
+ ('518880','gold','518880','holding','亿份','黄金ETF华安',5),
+ ('518800','gold','518800','holding','亿份','黄金基金国泰',6),
+ ('518660','gold','518660','holding','亿份','工银黄金',7),
+ ('au-cftc','gold','CFTC-AU','positioning','手','CFTC黄金非商业净多',8);

@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS instruments (
   source_id TEXT NOT NULL REFERENCES sources(id),
   code TEXT,
   metric TEXT NOT NULL,
+  unit TEXT,                    -- v1.2：品种级单位（元/吨、吨、元/克、万盎司、亿份、张、手）
   name TEXT NOT NULL,
   sort_order INTEGER NOT NULL DEFAULT 0
 );
@@ -66,6 +67,10 @@ def connect(path=None) -> sqlite3.Connection:
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    # v1.2 迁移：instruments 补 unit 列（CREATE TABLE IF NOT EXISTS 不会给老表加列）
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(instruments)")}
+    if "unit" not in cols:
+        conn.execute("ALTER TABLE instruments ADD COLUMN unit TEXT")
     seed = Path(__file__).resolve().parent.parent / "seed.sql"
     conn.executescript(seed.read_text(encoding="utf-8"))
     conn.commit()

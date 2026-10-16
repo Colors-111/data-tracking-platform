@@ -11,7 +11,7 @@ def _no_calendar(monkeypatch):
 def _seed_pair(conn):
     conn.execute("INSERT OR REPLACE INTO sources VALUES"
                  "('v','V','g','daily','fake.stale','x',1.0,0,1,9)")
-    conn.execute("INSERT OR REPLACE INTO instruments VALUES"
+    conn.execute("INSERT OR REPLACE INTO instruments(id,source_id,code,metric,name,sort_order) VALUES"
                  "('v1','v','V1','price','v',1)")
     conn.execute("INSERT INTO observations VALUES"
                  "('v1','price','2026-10-10',1.0,NULL,'t')")
