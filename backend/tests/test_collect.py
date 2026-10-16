@@ -147,3 +147,46 @@ def test_main_backup_gate(conn, fake_source, monkeypatch):
     conn.execute("UPDATE sources SET fetcher='fake.boom' WHERE id='fake'"); conn.commit()
     assert C.main(["--source", "fake"]) == 1
     assert len(calls) == 0          # failed → 不备份
+
+def test_backfill_fills_history_before_recent_data(conn, fake_source, monkeypatch):
+    # 库里已有"新"数据（target=01-06）时，--backfill 仍须补更早历史（01-02、01-05）；
+    # 已覆盖的 target（01-06）按日期精确跳过，不重复 fetch
+    monkeypatch.setattr(C, "connect", lambda: conn)
+    monkeypatch.setattr(C, "trade_dates_from_to",
+                        lambda a, b: ["2026-01-05", "2026-01-06", "2026-01-07"])
+    conn.execute("INSERT INTO observations VALUES"
+                 "('f1','price','2026-01-06',99.0,NULL,'2026-01-07T09:00:00')")
+    conn.commit()
+    rc = C.main(["--backfill", "--from", "2026-01-05", "--to", "2026-01-07",
+                 "--source", "fake"])
+    assert rc == 0
+    targets = {r["trade_date"] for r in conn.execute(
+        "SELECT DISTINCT trade_date FROM observations")}
+    assert targets == {"2026-01-02", "2026-01-05", "2026-01-06"}  # 01-06 预插；01-02/01-05 补历史
+    ran = {r["trade_date"] for r in conn.execute(
+        "SELECT trade_date FROM job_runs")}
+    assert ran == {"2026-01-05", "2026-01-06"}   # d=01-07 的 target 已覆盖 → 未 fetch
+
+def test_backfill_window_fetcher_stops_early(conn, fake_source, monkeypatch):
+    # 窗口型源（fetch 忽略目标日，恒返回近期整段）：首次 fetch 后即 break，不空跑整个区间
+    monkeypatch.setattr(C, "connect", lambda: conn)
+    monkeypatch.setattr(C, "trade_dates_from_to",
+                        lambda a, b: ["2026-01-05", "2026-01-06", "2026-01-07"])
+    calls = []
+
+    @register("fake.window")
+    class Window:
+        source_id = "fake"; lag_days = 1
+        def __init__(self, source, instruments): pass
+        def fetch(self, trade_date):
+            calls.append(trade_date)
+            return [Observation("f1", "price", "2026-01-06", 42.0)]  # 固定近期，不含目标日
+
+    conn.execute("UPDATE sources SET fetcher='fake.window' WHERE id='fake'"); conn.commit()
+    rc = C.main(["--backfill", "--from", "2026-01-05", "--to", "2026-01-07",
+                 "--source", "fake"])
+    assert rc == 0                                  # 提前停止不算失败
+    assert len(calls) == 1                          # 首次 fetch 即 break
+    assert {r["trade_date"] for r in conn.execute(
+        "SELECT DISTINCT trade_date FROM observations")} == {"2026-01-06"}
+    assert conn.execute("SELECT COUNT(*) c FROM job_runs").fetchone()["c"] == 1

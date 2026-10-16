@@ -92,6 +92,9 @@ def run_source(conn, source, instruments, run_date: str) -> dict:
         upsert_observations(conn, obs, started)
         result["rows"] = len(obs)
         result["target_date"] = target
+        # fetch 是否真的覆盖了目标日：精确日期源成功时恒 True；
+        # 窗口型源（如库存，fetch 返回近期整段）取历史目标时 False——backfill 据此提前止损
+        result["covered"] = any(o.trade_date == target for o in obs)
         if not obs:
             result["status"] = "empty"
         elif (m := source_max_date(conn, source["id"])) and m < target:
@@ -152,18 +155,36 @@ def main(argv=None):
         log.info("回补 %s ~ %s，共 %d 个交易日", args.d_from, args.d_to, len(dates))
         failed = []
         for s in sources:
+            insts = conn.execute(
+                "SELECT * FROM instruments WHERE source_id=? ORDER BY sort_order",
+                (s["id"],)).fetchall()
+            # lag 从 fetcher 取（未注册 fetcher 的源 run_source 会正常标 failed，lag 用配置值兜底）
+            try:
+                lag = build_fetcher(s["fetcher"], s, insts).lag_days
+            except KeyError:
+                lag = s["lag_days"]
             for d in dates:
-                # 已有数据则跳过：精确日期源逐日推进；窗口型源（如库存，fetch
-                # 忽略日期返回整段近60日）首日抓完即整段跳过，避免数千次重复抓取
-                if (h := source_max_date(conn, s["id"])) and d <= h:
+                # 按【目标日】判覆盖：库里已有该源目标日的数据才跳过——
+                # 支持在已有较新日常数据时向前补历史（旧规则 d<=max 会把历史全部误跳）
+                target = previous_trade_date(d, lag)
+                covered = conn.execute(
+                    """SELECT 1 FROM observations o
+                         JOIN instruments i ON i.id=o.instrument_id
+                        WHERE i.source_id=? AND o.trade_date=? LIMIT 1""",
+                    (s["id"], target)).fetchone()
+                if covered:
                     continue
-                insts = conn.execute(
-                    "SELECT * FROM instruments WHERE source_id=? ORDER BY sort_order",
-                    (s["id"],)).fetchall()
                 r = run_source(conn, s, insts, d)
                 if r["status"] == "failed":
                     failed.append((s["id"], d))
                     break   # 断点续跑：保留现场，下次回补从该日重试
+                if (not r.get("covered")
+                        and (h := source_max_date(conn, s["id"]))
+                        and h > r["target_date"]):
+                    # 窗口型源：fetch 不含目标日（只覆盖近期），向更早回补不会再有产出
+                    log.info("源 %s 为窗口型（fetch 不含目标日，仅覆盖近期），停止向更早回补",
+                             s["id"])
+                    break
         if failed:
             log.error("回补存在失败源/日期：%s（修复后重跑 --backfill 即续传）", failed)
             return 1
