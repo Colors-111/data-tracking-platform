@@ -9,6 +9,18 @@ services:
       - DB_PATH=/app/data/dtp.db
     restart: unless-stopped
 
+  # 常驻调度器：交易日 16:40 触发采集 + 启动/例行后自动补跑（替代宿主机 systemd timer）
+  scheduler:
+    build: .
+    command: ["uv", "run", "--no-sync", "python", "-m", "backend.scheduler"]
+    volumes: ["./data:/app/data"]
+    environment:
+      - TZ=Asia/Shanghai
+      - DB_PATH=/app/data/dtp.db
+      - WEBHOOK_URL=${WEBHOOK_URL:-}
+    restart: unless-stopped
+    user: "1000:1000"
+
   collect:
     build: .
     user: "1000:1000"
