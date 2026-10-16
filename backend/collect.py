@@ -132,6 +132,9 @@ def main(argv=None):
     ap.add_argument("--from", dest="d_from")
     ap.add_argument("--to", dest="d_to", default=dt.date.today().isoformat())
     ap.add_argument("--source", help="只跑指定 source id（回补/调试用）")
+    ap.add_argument("--force", action="store_true",
+                    help="backfill 忽略 covered 跳过：给已有源扩成分后强制重抓历史"
+                         "（幂等 upsert，不重不漏）")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
@@ -165,14 +168,15 @@ def main(argv=None):
                 lag = s["lag_days"]
             for d in dates:
                 # 按【目标日】判覆盖：库里已有该源目标日的数据才跳过——
-                # 支持在已有较新日常数据时向前补历史（旧规则 d<=max 会把历史全部误跳）
+                # 支持在已有较新日常数据时向前补历史（旧规则 d<=max 会把历史全部误跳）。
+                # --force：给已有源扩成分后新成分无历史，忽略 covered 强制重抓
                 target = previous_trade_date(d, lag)
                 covered = conn.execute(
                     """SELECT 1 FROM observations o
                          JOIN instruments i ON i.id=o.instrument_id
                         WHERE i.source_id=? AND o.trade_date=? LIMIT 1""",
                     (s["id"], target)).fetchone()
-                if covered:
+                if covered and not args.force:
                     continue
                 r = run_source(conn, s, insts, d)
                 if r["status"] == "failed":

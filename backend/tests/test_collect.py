@@ -224,3 +224,38 @@ def test_backfill_window_fetcher_stops_early(conn, fake_source, monkeypatch):
     assert {r["trade_date"] for r in conn.execute(
         "SELECT DISTINCT trade_date FROM observations")} == {"2026-01-06"}
     assert conn.execute("SELECT COUNT(*) c FROM job_runs").fetchone()["c"] == 1
+
+def test_backfill_force_refetches_for_new_instruments(conn, fake_source, monkeypatch):
+    # 给已有源扩成分：covered 判定按源——老成分（f1）已有目标日数据即整日跳过，
+    # 新成分（f2，上市晚）的历史永远补不进。--force 忽略 covered 强制重抓；
+    # 幂等 upsert 保证重抓不重不漏、老成分数据原样。
+    monkeypatch.setattr(C, "connect", lambda: conn)
+    monkeypatch.setattr(C, "trade_dates_from_to", lambda a, b: ["2026-01-06"])
+    conn.execute("INSERT INTO observations VALUES"
+                 "('f1','price','2026-01-05',99.0,NULL,'2026-01-05T09:00:00')")  # 老成分已有
+    conn.execute("INSERT OR REPLACE INTO instruments VALUES"
+                 "('f2','fake','F2','price','假品种2',2)")   # 种子扩充：源内新增成分
+
+    @register("fake.newcomp")
+    class NewComp:
+        source_id = "fake"; lag_days = 1
+        def __init__(self, source, instruments): pass
+        def fetch(self, trade_date):
+            return [Observation("f2", "price", trade_date, 7.0)]   # 新成分，同目标日
+
+    conn.execute("UPDATE sources SET fetcher='fake.newcomp' WHERE id='fake'"); conn.commit()
+    argv = ["--backfill", "--from", "2026-01-06", "--to", "2026-01-06", "--source", "fake"]
+    assert C.main(argv) == 0
+    assert conn.execute(   # 不带 --force：源级 covered 跳过 → 新成分未入库
+        "SELECT COUNT(*) c FROM observations WHERE instrument_id='f2'"
+    ).fetchone()["c"] == 0
+    assert C.main(argv + ["--force"]) == 0   # --force 重抓
+    assert conn.execute(
+        "SELECT value FROM observations WHERE instrument_id='f2'"
+    ).fetchone()["value"] == 7.0             # 新成分历史入库
+    assert conn.execute(
+        "SELECT value FROM observations WHERE instrument_id='f1'"
+    ).fetchone()["value"] == 99.0            # 老成分数据原样
+    assert C.main(argv + ["--force"]) == 0   # 幂等：再 force 一遍
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM observations").fetchone()["c"] == 2   # 不重不漏
