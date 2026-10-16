@@ -1,1 +1,2 @@
-from . import akshare_cu_inventory, akshare_sse_etf, akshare_etf_scale  # noqa: F401
+from . import (akshare_cu_inventory, akshare_etf_scale, akshare_macro,
+               akshare_sse_etf)  # noqa: F401
