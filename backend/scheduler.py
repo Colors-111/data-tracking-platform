@@ -29,18 +29,31 @@ def _trade_days():
 
 def _is_trade_day(d: dt.date) -> bool:
     days = _trade_days()
-    if days is None:
+    if not days or d.isoformat() > days[-1]:
+        # 无日历 / 空日历 / 日期超出日历上界（新浪日历只覆盖到当年年末，常驻进程
+        # 不停机跨年后 d 恒不在 days，会让 next_run 死循环假死）→ 按工作日降级判定
         return d.weekday() < 5
     return d.isoformat() in days
 
 
 def next_run(now: dt.datetime) -> dt.datetime:
-    """下一个交易日 16:40（本地时间；容器 TZ=Asia/Shanghai）。"""
+    """下一个交易日 16:40（本地时间；容器 TZ=Asia/Shanghai）。
+
+    日历耗尽双保险：_is_trade_day 对超出日历上界的日期按工作日降级；此处再设
+    400 次迭代上限，超限告警并按工作日推算返回——常驻进程跨年绝不假死。
+    """
     candidate = now.replace(hour=RUN_TIME.hour, minute=RUN_TIME.minute,
                             second=0, microsecond=0)
+    # 恰为 16:40:00.000000（candidate == now）也顺延：主循环 sleep 醒来于
+    # 16:40:00.00x 后才重算此分支，恒等情形实际不可达，纯防御
     if candidate <= now:
         candidate += dt.timedelta(days=1)
-    while not _is_trade_day(candidate.date()):
+    for _ in range(400):
+        if _is_trade_day(candidate.date()):
+            return candidate
+        candidate += dt.timedelta(days=1)
+    log.error("连续 400 日未找到交易日（交易日历异常？），按工作日降级推算下次采集")
+    while candidate.weekday() >= 5:
         candidate += dt.timedelta(days=1)
     return candidate
 
