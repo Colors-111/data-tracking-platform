@@ -45,6 +45,41 @@ def test_source_detail_shape(client, conn):
     assert len(body["series"]["510300"]) == 3
 
 
+def test_source_detail_instrument_meta(client, conn):
+    # v1.2 增量字段：cards 每张带 metric/unit（NULL instrument.unit 回退 source.unit），
+    # 顶层 instrument_meta 含全部 instruments（含无数据的，供前端分区展示"暂无数据"区）
+    for d, v in [("2026-10-14", 100), ("2026-10-15", 103)]:
+        conn.execute("INSERT INTO observations VALUES('510300','share',?,?,NULL,'t')", (d, v))
+    conn.commit()
+    body = client.get("/api/sources/hs300-etf?range=1m").json()
+    card = body["cards"][0]
+    assert card["metric"] == "share" and card["unit"] == "亿份"   # NULL instrument.unit 回退源单位
+    meta = body["instrument_meta"]["510300"]
+    assert meta == {"metric": "share", "unit": "亿份", "name": "沪深300ETF华泰柏瑞"}
+    # series 形状不变（Task 13-17 契约）
+    assert body["series"]["510300"] == [["2026-10-14", 100], ["2026-10-15", 103]]
+
+
+def test_source_detail_commodity_meta(client, conn):
+    # 商品组源：instrument 级 unit（不回退源 unit='混合'）；meta 覆盖无数据的 instrument
+    conn.execute("INSERT INTO observations VALUES('cu-shfe-price','price','2026-10-14',70000,NULL,'t')")
+    conn.execute("INSERT INTO observations VALUES('cu-shfe-price','price','2026-10-15',77000,NULL,'t')")
+    conn.commit()
+    body = client.get("/api/sources/copper?range=1m").json()
+    assert set(body["instrument_meta"]) == {
+        "cu-shfe-price", "cu-spot-price", "cu-inventory", "cu-warrant",
+        "cu-lme-stock", "cu-lme-warrant", "cu-lme-holding"}
+    assert body["instrument_meta"]["cu-shfe-price"] == {
+        "metric": "price", "unit": "元/吨", "name": "SHFE沪铜主力"}
+    assert body["instrument_meta"]["cu-warrant"]["metric"] == "warehouse"
+    assert body["instrument_meta"]["cu-warrant"]["unit"] == "吨"   # 品种级 unit 不被源 unit='混合' 覆盖
+    card = next(c for c in body["cards"] if c["instrument_id"] == "cu-shfe-price")
+    assert card["metric"] == "price" and card["unit"] == "元/吨"
+    # 无数据的 instrument 仍进 meta，但不产生 card（既有行为）
+    assert "cu-warrant" not in {c["instrument_id"] for c in body["cards"]}
+    assert body["series"]["cu-warrant"] == []
+
+
 def test_unknown_source_404(client):
     assert client.get("/api/sources/nope").status_code == 404
 
@@ -61,6 +96,9 @@ def test_empty_source_returns_null_shape(client):
     assert body["as_of_date"] is None
     assert body["cards"] == []
     assert body["series"] == {}
+    # v1.2 增量：空源也带 instrument_meta（前端分区可展示"数据累积中"），unit 回退源单位
+    assert body["instrument_meta"] == {
+        "coal-price": {"metric": "price", "unit": "元/吨", "name": "动力煤现货价"}}
 
 
 def test_window_filter_excludes_old_rows(client, conn):

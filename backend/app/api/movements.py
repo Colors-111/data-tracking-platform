@@ -25,7 +25,8 @@ def movements(date: str = Query(None), conn=Depends(get_conn)):
                FROM observations WHERE trade_date <= :as_of
            )
            SELECT r.instrument_id, r.trade_date, r.value, r.prev_v,
-                  i.name AS instrument_name, s.id AS source_id, s.name AS source_name, s.unit,
+                  i.name AS instrument_name, s.id AS source_id, s.name AS source_name,
+                  COALESCE(i.unit, s.unit) AS unit,   -- v1.2：品种级 unit 优先，NULL 回退源单位
                   (SELECT group_concat(v) FROM (
                      SELECT CAST(value AS TEXT) v FROM spark
                       WHERE instrument_id=r.instrument_id AND rn<=5 ORDER BY trade_date)) AS spark5

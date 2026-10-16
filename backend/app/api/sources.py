@@ -38,13 +38,21 @@ def source_detail(sid: str, range: str = Query("3m"), conn=Depends(get_conn)):
     days = RANGE_DAYS.get(range)
     if days is None and range != "all":
         raise HTTPException(400, "bad range")
+    insts = conn.execute(
+        "SELECT * FROM instruments WHERE source_id=? ORDER BY sort_order",
+        (sid,)).fetchall()
+    # v1.2 商品组源：全量 instruments 的指标/单位元数据（含无数据的，供前端分区展示）；
+    # unit 统一在此回退（instrument.unit 为空回退 source.unit），前端直接用
+    instrument_meta = {i["id"]: {"metric": i["metric"], "unit": i["unit"] or src["unit"],
+                                 "name": i["name"]} for i in insts}
     as_of = conn.execute(
         """SELECT MAX(o.trade_date) m FROM observations o
              JOIN instruments i ON i.id=o.instrument_id WHERE i.source_id=?""",
         (sid,)).fetchone()["m"]
     if not as_of:
         return {"id": sid, "name": src["name"], "unit": src["unit"],
-                "as_of_date": None, "cards": [], "series": {}}
+                "as_of_date": None, "cards": [], "series": {},
+                "instrument_meta": instrument_meta}
     # as_of 源自库内 trade_date（上游外部数据），必须绑参——防上游构造词典序居大的注入串；
     # days 来自 RANGE_DAYS 白名单 int，可内插
     day_filter = f"AND o.trade_date >= date(?, '-{days} days')" if days else ""
@@ -65,16 +73,16 @@ def source_detail(sid: str, range: str = Query("3m"), conn=Depends(get_conn)):
     by_inst: dict[str, list] = {}
     for r in rows:
         by_inst.setdefault(r["instrument_id"], []).append(r)
-    for inst in conn.execute(
-            "SELECT * FROM instruments WHERE source_id=? ORDER BY sort_order",
-            (sid,)).fetchall():
+    for inst in insts:
         rs = by_inst.get(inst["id"], [])
         pts = [(r["trade_date"], r["value"]) for r in rs]  # 已按日期升序，series 可直接画线
         series[inst["id"]] = pts
         if rs:
             last = next(r for r in rs if r["rn_desc"] == 1)
             card = {"instrument_id": inst["id"], "name": inst["name"],
-                    "code": inst["code"], "value": last["value"],
+                    "code": inst["code"], "metric": inst["metric"],
+                    "unit": inst["unit"] or src["unit"],
+                    "value": last["value"],
                     "day_change": None, "day_pct": None,
                     "range_change": None, "range_pct": None}
             if last["prev_v"] is not None and last["prev_v"] != 0:
@@ -85,4 +93,5 @@ def source_detail(sid: str, range: str = Query("3m"), conn=Depends(get_conn)):
                 card["range_pct"] = round((last["value"] / last["first_v"] - 1) * 100, 2)
             cards.append(card)
     return {"id": sid, "name": src["name"], "unit": src["unit"],
-            "as_of_date": as_of, "cards": cards, "series": series}
+            "as_of_date": as_of, "cards": cards, "series": series,
+            "instrument_meta": instrument_meta}

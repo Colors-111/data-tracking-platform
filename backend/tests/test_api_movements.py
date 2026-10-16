@@ -58,6 +58,20 @@ def test_movements_date_param_path(client, seeded):
     assert body["movements"] == []   # 10-14 时 510300 只有 100 一个点，无 prev
 
 
+def test_movements_unit_fallback(client, conn):
+    # v1.2 商品组源：instrument 级 unit 优先，NULL 回退源单位（ETF）
+    for iid, metric, d, v in [("cu-shfe-price", "price", "2026-10-14", 70000),
+                              ("cu-shfe-price", "price", "2026-10-15", 77000),
+                              ("510300", "share", "2026-10-14", 100),
+                              ("510300", "share", "2026-10-15", 103)]:
+        conn.execute("INSERT INTO observations VALUES(?,?,?,?,NULL,'t')", (iid, metric, d, v))
+    conn.commit()
+    items = client.get("/api/movements").json()["movements"]
+    units = {m["instrument_id"]: m["unit"] for m in items}
+    assert units["cu-shfe-price"] == "元/吨"   # 品种级 unit，非源 unit='混合'
+    assert units["510300"] == "亿份"           # NULL instrument.unit 回退源单位
+
+
 def test_jobs_latest(client, conn):
     conn.execute("INSERT INTO job_runs(source_id,trade_date,status,rows,error,started_at,finished_at)"
                  " VALUES('hs300-etf','2026-10-15','ok',5,NULL,'t','t')")
