@@ -948,6 +948,7 @@ git add backend/collect.py backend/tests/test_collect.py && git commit -m "feat:
 
 ```python
 # backend/tests/test_notify.py
+import httpx
 import pytest
 from backend import notify
 
@@ -955,9 +956,13 @@ def test_renders_summary_with_status():
     results = [
         {"source_id": "a", "rows": 5, "status": "ok", "error": None},
         {"source_id": "b", "rows": 0, "status": "failed", "error": "RuntimeError('x')"},
+        {"source_id": "c", "rows": 0, "status": "empty", "error": None},
+        {"source_id": "d", "rows": 3, "status": "stale", "error": None},
     ]
     text = notify.render_summary(results)
-    assert "a" in text and "ok" in text and "failed" in text and "x" in text
+    # 断言渲染契约（STATUS_CN），不是英文状态原词
+    assert "✅" in text and "失败" in text and "空" in text and "陈旧" in text
+    assert "x" in text and "b" in text and "0 行" in text
 
 def test_send_skips_without_url(monkeypatch):
     called = []
@@ -971,11 +976,24 @@ def test_send_posts_wechat_format(monkeypatch):
     called = {}
     def fake_post(url, json=None, timeout=None):
         called.update(url=url, payload=json)
+        class R:  # 200 + errcode=0 → 正常
+            status_code = 200
+            def json(self): return {"errcode": 0}
+        return R()
     monkeypatch.setenv("WEBHOOK_URL", "https://example.com/hook")
     monkeypatch.setattr(notify.httpx, "post", fake_post)
     notify.send_summary([{"source_id": "a", "rows": 1, "status": "ok", "error": None}])
     assert called["url"] == "https://example.com/hook"
     assert called["payload"]["msgtype"] == "text"
+    assert "content" in called["payload"]["text"]
+
+def test_send_swallows_post_exception(monkeypatch):
+    def boom(*a, **k):
+        raise httpx.ConnectError("网络不通")
+    monkeypatch.setenv("WEBHOOK_URL", "https://example.com/hook")
+    monkeypatch.setattr(notify.httpx, "post", boom)
+    notify.send_summary([{"source_id": "a", "rows": 1, "status": "ok", "error": None}])
+    # 不抛出即通过：webhook 失败不得炸掉 main()（否则假 OnFailure 告警）
 ```
 
 ```python
@@ -1017,9 +1035,16 @@ Expected: FAIL（notify 不存在）
 - [ ] **Step 3: 写 backend/notify.py**
 
 ```python
-"""采集汇总推送：企业微信/钉钉 text 消息格式（二者 msgtype 兼容）。无 WEBHOOK_URL 时静默跳过。"""
+"""采集汇总推送：企业微信/钉钉 text 消息格式（二者 msgtype 兼容）。
+   无 WEBHOOK_URL 时静默跳过；推送失败/errcode 非 0 记 warning——
+   这是"静默失败防线"，通道自身不能静默死亡（HTTP 200 + errcode≠0
+   是企微/钉钉最常见的故障形态：token 失效/关键词不匹配/限流）。"""
+import logging
 import os
+
 import httpx
+
+log = logging.getLogger("notify")
 
 STATUS_CN = {"ok": "✅", "empty": "⚠️空", "stale": "⚠️陈旧", "failed": "❌失败"}
 
@@ -1028,20 +1053,26 @@ def render_summary(results: list[dict]) -> str:
     for r in results:
         line = f"{STATUS_CN.get(r['status'], r['status'])} {r['source_id']}: {r['rows']} 行"
         if r.get("error"):
-            line += f" — {r['error']}"
+            line += f" — {str(r['error'])[:120]}"
         lines.append(line)
-    return "\n".join(lines)
+    text = "\n".join(lines)
+    if len(text.encode("utf-8")) > 1800:   # 企微 text 上限 2048 字节，超限整条被拒
+        text = text.encode("utf-8")[:1800].decode("utf-8", "ignore") + "\n…(截断)"
+    return text
 
 def send_summary(results: list[dict]) -> None:
     url = os.environ.get("WEBHOOK_URL")
     if not url or not results:
         return
     try:
-        httpx.post(url, json={"msgtype": "text",
-                              "text": {"content": render_summary(results)}},
-                   timeout=10)
+        resp = httpx.post(url, json={"msgtype": "text",
+                                     "text": {"content": render_summary(results)}},
+                          timeout=10)
+        body = resp.json() if resp.status_code == 200 else {}
+        if resp.status_code != 200 or body.get("errcode") not in (0, None):
+            log.warning("webhook 推送异常：%s %s", resp.status_code, str(body)[:200])
     except Exception:
-        pass  # 通知失败不影响采集结果，job_runs 已留痕
+        log.warning("webhook 推送失败", exc_info=True)  # 不影响采集结果，job_runs 已留痕
 ```
 
 - [ ] **Step 4: 运行确认通过**
