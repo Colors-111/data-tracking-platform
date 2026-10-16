@@ -16,9 +16,15 @@ const PALETTE = ["#e74c3c", "#3498db", "#f39c12", "#27ae60", "#9b59b6", "#16a085
 
 const option = computed(() => ({
   color: PALETTE,
-  tooltip: { trigger: "axis" },
+  tooltip: {
+    trigger: "axis",
+    // 带单位提示（归一化模式无单位，不格式化）
+    ...(props.unit && !props.percent
+      ? { valueFormatter: (v) => (v == null ? "-" : `${v} ${props.unit}`) }
+      : {}),
+  },
   legend: { type: "scroll", top: 0 },
-  grid: { left: 60, right: 20, top: 36, bottom: 56 },
+  grid: { left: 8, right: 20, top: 36, bottom: 56, containLabel: true }, // containLabel 防长轴标签裁剪
   xAxis: { type: "time" },
   yAxis: { type: "value", scale: true,
            name: props.percent ? "%" : (props.unit ?? "") },
