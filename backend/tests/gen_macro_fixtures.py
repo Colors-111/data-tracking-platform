@@ -19,6 +19,12 @@
      裸 kline secid 119.XAU/120.XAU 返回 0 根。退路实测新浪外盘日K可用：
      futures_foreign_hist(symbol='XAU')，5186 行全历史（2006-10-16~2026-10-16），列
      date/open/high/low/close/volume/position/s，close 美元/盎司——截尾近 400 行
+   - macro_cons_gold（v1.2.1 同日补录）：SPDR 黄金 ETF 持仓（全球最大黄金 ETF），
+     2889 行全历史（2004-11-19~2026-10-15，日频），列 商品/日期/总库存/增持减持/总价值，
+     总库存单位吨（商品列恒为'黄金'、日期为 datetime.date 对象——to_json 落盘
+     epoch-ms，read_json 显式 convert_dates 回读，normalize_date UTC 锚定还原）——
+     截尾近 400 行。注：列名'增持/减持'含斜杠，JSON 落盘转义为'增持\/减持'（pandas
+     自动处理，不影响回放）
    """
 from pathlib import Path
 
@@ -52,3 +58,7 @@ dump("macro_gold_reserve.json", ak.macro_china_foreign_exchange_gold())
 sge = ak.spot_hist_sge(symbol="Au99.99")
 dump("macro_sge_spot.json", sge.tail(400))
 dump("macro_london_gold.json", ak.futures_foreign_hist(symbol="XAU").tail(400))
+
+# v1.2.1 增量（同日补录）：SPDR 黄金 ETF 持仓——gold 组子 fetcher SpdrGoldFetcher，
+# composite 按仪器 code 'SPDR-GLD' 委托（吨，日频，2004 年起全历史）
+dump("macro_spdr_gold.json", ak.macro_cons_gold().tail(400))

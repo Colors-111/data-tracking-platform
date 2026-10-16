@@ -39,7 +39,14 @@
    实测 symbol_market_map 仅外汇对（forex_hist_em('XAUUSD') KeyError by design）、
    forex_spot_em 限流 ConnectionError、裸 kline secid 119.XAU/120.XAU 返回 0 根。
    两类与 _WideTableFetcher 同约定：全量返回、幂等 upsert、未知 code 构建期
-   fail-loud；fixture 实测记录见 tests/gen_macro_fixtures.py。"""
+   fail-loud；fixture 实测记录见 tests/gen_macro_fixtures.py。
+
+   v1.2.1 增量（2026-10-16）：SPDR 黄金 ETF 持仓（SpdrGoldFetcher，
+   macro_cons_gold()，总库存单位吨——SPDR GLD 全球最大黄金 ETF，日频，2004 年
+   起全历史）。【不注册】——composite 按仪器 code 'SPDR-GLD' import 委托（同
+   现货两子类契约，走 _WideTableFetcher）。接口无参数返回全历史宽表，日期列
+   生产形态为 datetime.date 对象（normalize_date str 分支兜住）；metric 硬编码
+   'holding'，单位语义由 seed instruments.unit（'吨'）承载，fetcher 透传原值。"""
 import calendar
 import re
 
@@ -267,3 +274,25 @@ class LondonSpotFetcher(_FullHistSpotFetcher):
 
     interface = "futures_foreign_hist"
     code_symbols = {"XAU": "XAU"}
+
+
+class SpdrGoldFetcher(_WideTableFetcher):
+    """SPDR 黄金 ETF 持仓（v1.2.1）：SPDR-GLD → 总库存（吨，日频）。
+       SPDR GLD 为全球最大黄金 ETF，其吨位持仓是海外实物金需求的标杆指标。
+       【不注册】——composite 按仪器 code 'SPDR-GLD' import 委托（同现货两子类
+       契约）。macro_cons_gold() 无参数返回全历史宽表（2004 年起），列
+       商品/日期/总库存/增持减持/总价值：只取日期+总库存，增持减持/总价值与
+       商品列（恒为'黄金'）不映射；metric 硬编码 'holding'，单位吨由 seed
+       instruments.unit 承载，fetcher 透传原值。"""
+
+    interface = "macro_cons_gold"
+
+    def _build_targets(self, instruments):
+        targets = []
+        for i in instruments:
+            code = i["code"] or ""
+            if code != "SPDR-GLD":
+                raise ValueError(
+                    f"spdr_gold 未支持的仪器代码: {code}（约定 SPDR-GLD）")
+            targets.append((i["id"], "holding", ["总库存"]))
+        return targets

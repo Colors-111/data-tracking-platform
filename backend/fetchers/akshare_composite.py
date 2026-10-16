@@ -31,6 +31,8 @@
    - code 'LME-{CU|AL}-POS'             → LmeHoldingFetcher（positioning）
    - code 'CFTC-AU'                     → CftcNcFetcher（positioning，周频）
    - code 'GOLD-RESERVE'                → GoldReserveFetcher（reserve，月频锚月末）
+   - code 'SPDR-GLD'                    → SpdrGoldFetcher（holding，吨——SPDR
+     GLD 全球最大黄金 ETF 持仓，v1.2.1）
    - code 'AU9999' / 'XAU'              → SgeSpotFetcher / LondonSpotFetcher：
      可选分支，类名延迟解析（getattr），类未落地时 log.warning 跳过、不 fail
      （SGE/伦敦金现货由并行增量负责，类落地后自动接入）
@@ -63,6 +65,7 @@ from .akshare_macro import (
     GoldReserveFetcher,
     LmeHoldingFetcher,
     LmeStockFetcher,
+    SpdrGoldFetcher,
 )
 from .base import Observation, register
 
@@ -102,6 +105,7 @@ class _HoldingEtfFetcher(EtfScaleFetcher):
 # targets 并校验 code（fail-loud），seed 拼错当场暴露。
 _SUBS = {"lme_stock": LmeStockFetcher, "lme_holding": LmeHoldingFetcher,
          "cftc": CftcNcFetcher, "reserve": GoldReserveFetcher,
+         "spdr_gold": SpdrGoldFetcher,
          "inventory": FuturesInventoryFetcher, "etf": _HoldingEtfFetcher}
 # 可选现货分支：类名延迟解析（getattr）——缺失时 log.warning 跳过、不 fail
 _OPTIONAL_SPOT_SUBS = {"AU9999": "SgeSpotFetcher", "XAU": "LondonSpotFetcher"}
@@ -142,6 +146,8 @@ def _family(code) -> str | None:
         return "cftc"
     if c == "GOLD-RESERVE":
         return "reserve"
+    if c == "SPDR-GLD":
+        return "spdr_gold"      # SPDR 黄金 ETF 持仓（吨，v1.2.1）
     if c in _INVENTORY_CODES:
         return "inventory"      # 东财库存（小写 symbol；cu-inventory 迁移回归修复）
     if len(c) == 6 and c.isdigit():

@@ -88,4 +88,8 @@ INSERT OR IGNORE INTO instruments(id,source_id,code,metric,unit,name,sort_order)
  ('518800','gold','518800','holding','亿份','黄金基金国泰',6),
  ('518660','gold','518660','holding','亿份','工银黄金',7),
  ('au-cftc','gold','CFTC-AU','positioning','手','CFTC黄金非商业净多',8),
- ('au-london-price','gold','XAU','price','美元/盎司','伦敦金现',9);
+ ('au-london-price','gold','XAU','price','美元/盎司','伦敦金现',9),
+ -- v1.2.1 SPDR 黄金 ETF 持仓（吨，全球最大黄金 ETF）。sort_order 挂尾部 10：
+ -- INSERT OR IGNORE 不更新已有行，重排 518880/518800/518660 之间需 UPDATE 存量
+ -- （会引入一次性迁移语义），本轮不做——列表展示顺序 9→10 仅差一位，可接受
+ ('au-gld-spdr','gold','SPDR-GLD','holding','吨','SPDR黄金ETF持仓(全球)',10);

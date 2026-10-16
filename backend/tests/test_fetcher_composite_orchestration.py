@@ -6,6 +6,8 @@
    - LME-{CU,AL}-POS             → LmeHoldingFetcher（positioning）
    - CFTC-AU                     → CftcNcFetcher（positioning，周频）
    - GOLD-RESERVE                → GoldReserveFetcher（reserve，月频锚月末）
+   - SPDR-GLD                    → SpdrGoldFetcher（holding，吨——SPDR 全球最大
+     黄金 ETF 持仓，v1.2.1）
    - AU9999 → SgeSpotFetcher、XAU → LondonSpotFetcher：现货分支（可注入，
      类缺失时 log.warning 跳过、不 fail）
    - 小写 'cu'/'al'/'ao' → FuturesInventoryFetcher（东财库存，metric='inventory'；
@@ -73,6 +75,10 @@ GOLD_RESERVE_DF = pd.DataFrame([
     {"统计时间": "2026.9", "黄金储备": 7747.0},
     {"统计时间": "2025.10", "黄金储备": 7466.0},
 ])
+SPDR_GOLD_DF = pd.DataFrame([
+    {"商品": "黄金", "日期": "2026-10-15", "总库存": 1053.911, "增持/减持": -0.285},
+    {"商品": "黄金", "日期": "2026-10-14", "总库存": 1054.196, "增持/减持": -1.215},
+])
 INVENTORY_DF = pd.DataFrame([
     {"日期": "2026-10-15", "库存": 65421.0, "增减": -591.0},
     {"日期": "2026-10-14", "库存": 66012.0, "增减": 120.0},
@@ -100,6 +106,7 @@ def stub_interfaces(monkeypatch, **overrides):
         "macro_euro_lme_holding": LME_HOLDING_DF,
         "macro_usa_cftc_c_holding": CFTC_DF,
         "macro_china_foreign_exchange_gold": GOLD_RESERVE_DF,
+        "macro_cons_gold": SPDR_GOLD_DF,
         "futures_inventory_em": INVENTORY_DF,
         "fund_etf_scale_sse": ETF_SNAPSHOT_DF,
     }
@@ -172,6 +179,19 @@ def test_gold_macro_branches_delegated(monkeypatch):
     assert got["au-shfe-price", "2026-10-16", "price"] == pytest.approx(886.48)
     assert len(calls["macro_usa_cftc_c_holding"]) == 1
     assert len(calls["macro_china_foreign_exchange_gold"]) == 1
+
+
+def test_spdr_gold_branch_delegated(monkeypatch):
+    # SPDR-GLD → SpdrGoldFetcher（holding/吨，全球最大黄金 ETF；v1.2.1 增量）
+    insts = [{"id": "au-gld-spdr", "code": "SPDR-GLD", "metric": "holding"}]
+    f, calls = build(monkeypatch, insts)
+    obs = f.fetch("2026-10-15")
+    got = keyed(obs)
+    assert got["au-gld-spdr", "2026-10-15", "holding"] == pytest.approx(1053.911)
+    assert got["au-gld-spdr", "2026-10-14", "holding"] == pytest.approx(1054.196)
+    # 全历史型：恰调一次接口，无其他成分 → 其余打桩接口全未触（分支短路）
+    assert len(calls["macro_cons_gold"]) == 1
+    assert all(not p for n, p in calls.items() if n != "macro_cons_gold")
 
 
 # ---------- AU9999 / XAU：可选分支委托路由（类可注入） ----------
@@ -348,7 +368,7 @@ def test_all_branches_fail_reraises(monkeypatch):
 
 
 def test_macro_only_source_short_circuits_other_interfaces(monkeypatch):
-    # 只挂 GOLD-RESERVE：其余六个接口一个都不触
+    # 只挂 GOLD-RESERVE：其余七个接口一个都不触
     f, calls = build(monkeypatch,
                      [{"id": "au-reserve", "code": "GOLD-RESERVE",
                        "metric": "reserve"}])
@@ -356,7 +376,8 @@ def test_macro_only_source_short_circuits_other_interfaces(monkeypatch):
     assert len(calls["macro_china_foreign_exchange_gold"]) == 1
     for name in ("futures_zh_daily_sina", "futures_spot_price",
                  "futures_shfe_warehouse_receipt", "macro_euro_lme_stock",
-                 "macro_euro_lme_holding", "macro_usa_cftc_c_holding"):
+                 "macro_euro_lme_holding", "macro_usa_cftc_c_holding",
+                 "macro_cons_gold"):
         assert calls[name] == [], name
     assert keyed(obs) == {("au-reserve", "2026-09-30", "reserve"): 7747.0,
                           ("au-reserve", "2025-10-31", "reserve"): 7466.0}
@@ -379,7 +400,7 @@ _SQL_VALUES_RE = re.compile(
     r"INSERT\s+(?:OR\s+IGNORE\s+)?INTO\s+(\w+)\s*\(([^)]*)\)\s*VALUES(.*?);",
     re.S | re.I)
 
-# 全部 27 个品种的预期路由（与 seed.sql 商品组源 instruments 一一对应）。
+# 全部 28 个品种的预期路由（与 seed.sql 商品组源 instruments 一一对应）。
 # 双向集合比对：seed 增删品种必须同步更新此表——锁死“seed↔composite↔
 # 子 fetcher”这条最容易断的缝（上次 seed 对齐改的就是它）。
 EXPECTED_ROUTE = {
@@ -404,7 +425,7 @@ EXPECTED_ROUTE = {
     "AO": "shfe_spot",
     "ao": "inventory",
     "AO-WARRANT": "shfe_warrant",
-    # gold：SHFE 日K / SGE 现货 / 仓单 / 央行储备 / ETF 持仓 / CFTC / 伦敦金现
+    # gold：SHFE 日K / SGE 现货 / 仓单 / 央行储备 / ETF 持仓 / CFTC / 伦敦金现 / SPDR
     "AU0": "shfe_daily",
     "AU9999": "sge_spot",
     "AU-WARRANT": "shfe_warrant",
@@ -414,6 +435,7 @@ EXPECTED_ROUTE = {
     "518660": "etf",
     "CFTC-AU": "cftc",
     "XAU": "london_spot",
+    "SPDR-GLD": "spdr_gold",
 }
 
 # 子 fetcher 硬编码产出 metric 的分支：必须与 seed 行 metric 一致。
@@ -425,6 +447,7 @@ BRANCH_METRIC = {
     "LME-AL-STOCK": "inventory", "LME-AL-WARRANT": "warehouse",
     "LME-CU-POS": "positioning", "LME-AL-POS": "positioning",
     "GOLD-RESERVE": "reserve", "CFTC-AU": "positioning",
+    "SPDR-GLD": "holding",
     "AU9999": "price", "XAU": "price",
 }
 
@@ -434,7 +457,7 @@ EXPECTED_SUBS = {
     "aluminum": ["LmeStockFetcher", "LmeHoldingFetcher", "FuturesInventoryFetcher"],
     "alumina": ["FuturesInventoryFetcher"],
     "gold": ["SgeSpotFetcher", "GoldReserveFetcher", "CftcNcFetcher",
-             "LondonSpotFetcher", "_HoldingEtfFetcher"],
+             "SpdrGoldFetcher", "LondonSpotFetcher", "_HoldingEtfFetcher"],
 }
 
 
@@ -543,7 +566,7 @@ def _route(code) -> str | None:
 def test_seed_composite_route_consistency():
     """seed.sql ↔ composite 路由 ↔ 子 fetcher 三方一致性集成锁：
        解析 seed.sql 真实内容里 akshare.composite 源的全部 instruments，
-       逐一断言 27 个品种的 code 路由到预期家族、硬编码分支产出 metric 与
+       逐一断言 28 个品种的 code 路由到预期家族、硬编码分支产出 metric 与
        seed 行一致、composite targets 按 (id, metric) 与 seed 对齐、
        各源构建期子 fetcher 齐备。"""
     sources, insts = _parse_seed()
@@ -552,7 +575,7 @@ def test_seed_composite_route_consistency():
                 if s["fetcher"] == "akshare.composite"}
     assert comp_ids == {"copper", "aluminum", "alumina", "gold"}
     rows = [r for r in insts.values() if r["source_id"] in comp_ids]
-    assert len(rows) == 27
+    assert len(rows) == 28
     codes = [r["code"] for r in rows]
     assert len(set(codes)) == len(codes)        # code 唯一（composite targets 键）
     # 双向覆盖：seed 增删品种 vs EXPECTED_ROUTE 必须同步，防静默漂移

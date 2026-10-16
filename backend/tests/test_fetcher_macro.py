@@ -2,12 +2,13 @@
    覆盖：LME 库存/仓单（akshare.lme_stock）、LME 净持仓（akshare.lme_holding）、
    CFTC 商品非商业净多（akshare.cftc_nc）、央行黄金储备（akshare.gold_reserve），
    以及 v1.2 增量的现货子 fetcher：SGE 黄金现货（SgeSpotFetcher）、
-   伦敦金现（LondonSpotFetcher，新浪外盘日K）。
+   伦敦金现（LondonSpotFetcher，新浪外盘日K）、v1.2.1 的 SPDR 黄金 ETF 持仓
+   （SpdrGoldFetcher，macro_cons_gold，吨）。
    共同语义：全历史型——fetch 忽略 trade_date 返回接口全量观测，幂等 upsert；
    backfill 首日全量入库后 covered=True 自然续跑。
    instrument code 约定（与 Task A seed 对齐，id=code 同名，fetcher 只消费 id/code）：
-   LME-{CU|AL}-{STOCK|WARRANT|POS}、CFTC-AU、GOLD-RESERVE；现货两子类不注册，
-   composite（编排增量）按 code 'AU9999'/'XAU' import 委托。
+   LME-{CU|AL}-{STOCK|WARRANT|POS}、CFTC-AU、GOLD-RESERVE；现货两子类与 SPDR 不注册，
+   composite（编排增量）按 code 'AU9999'/'XAU'/'SPDR-GLD' import 委托。
    实测注记（2026-10-16）：任务书预期 macro_usa_cftc_nc_holding 实为【外汇】非商业
    （无商品列）；商品非商业在 macro_usa_cftc_c_holding，且四接口均无铜品种——
    铜的 CFTC 无法由 akshare 供给（seed 不设 cu-cftc，需直连 COT 官方报告另行
@@ -22,7 +23,11 @@ import pandas as pd
 import pytest
 
 import backend.fetchers  # noqa: F401 触发注册
-from backend.fetchers.akshare_macro import LondonSpotFetcher, SgeSpotFetcher
+from backend.fetchers.akshare_macro import (
+    LondonSpotFetcher,
+    SgeSpotFetcher,
+    SpdrGoldFetcher,
+)
 from backend.fetchers.base import build_fetcher
 
 FIX = Path(__file__).parent / "fixtures"
@@ -341,7 +346,92 @@ def test_spot_unknown_code_fails_loud(cls, bad):
 
 
 def test_spot_fetchers_not_registered():
-    # composite 委托契约：两子类只 import 构造、不占注册表——gold 源在 collect 的
+    # composite 委托契约：三个子类只 import 构造、不占注册表——gold 源在 collect 的
     # 唯一入口是 akshare.composite，若误 @register 会形成第二个可配入口
     import backend.fetchers.base as base_mod
-    assert not {SgeSpotFetcher, LondonSpotFetcher} & set(base_mod._REGISTRY.values())
+    assert not ({SgeSpotFetcher, LondonSpotFetcher, SpdrGoldFetcher}
+                & set(base_mod._REGISTRY.values()))
+
+
+# ---------- SPDR 黄金 ETF 持仓（v1.2.1 增量：不注册，供 composite 按 code 委托） ----------
+# composite 按 code 'SPDR-GLD' 委托 SpdrGoldFetcher（metric 'holding'，单位吨）。
+# fixture 实测记录见 gen_macro_fixtures.py：macro_cons_gold() 全历史 2889 行
+# （2004-11-19~2026-10-15，日频），列 商品/日期/总库存/增持减持/总价值，总库存单位
+# 吨（SPDR GLD 全球最大黄金 ETF）。日期列生产形态为 datetime.date 对象，fixture 经
+# to_json 落盘 epoch-ms、read_json 显式 convert_dates 回读（同 SGE/London 先例，
+# normalize_date UTC 锚定还原）。
+
+SPDR = pd.read_json(FIX / "macro_spdr_gold.json", convert_dates=["日期"])
+SPDR_INSTS = [{"id": "au-gld-spdr", "code": "SPDR-GLD", "metric": "holding"}]
+
+
+def make_spdr(monkeypatch, **fns):
+    """直接构造未注册子 fetcher（composite 委托契约），akshare 桩同 make()。"""
+    import backend.fetchers.akshare_macro as mod
+    monkeypatch.setattr(mod, "ak", types.SimpleNamespace(**fns))
+    return SpdrGoldFetcher({"id": "test-src"}, SPDR_INSTS)
+
+
+def test_spdr_gold_full_history(monkeypatch):
+    # fixture 逐行对账：每行 日期+总库存 → 恰一 holding 观测（全量行级，无重复）
+    f = make_spdr(monkeypatch, macro_cons_gold=lambda: SPDR)
+    obs = f.fetch("2026-10-16")
+    expected = fixture_kv(SPDR, "总库存", "au-gld-spdr", date_col="日期")
+    assert by_key(obs) == expected
+    assert len(obs) == len(expected)
+    assert all(o.metric == "holding" for o in obs)
+    assert min(o.trade_date for o in obs) == min(str(d)[:10] for d in SPDR["日期"])
+
+
+def test_spdr_gold_tail_matches_live_record(monkeypatch):
+    # 尾行对账锁定实测口径：2026-10-15 总库存 1053.911 吨（接口最新一日）
+    f = make_spdr(monkeypatch, macro_cons_gold=lambda: SPDR)
+    got = by_key(f.fetch("2026-10-16"))
+    assert got["au-gld-spdr", "2026-10-15"] == pytest.approx(1053.911)
+    assert got["au-gld-spdr", "2026-10-13"] == pytest.approx(1054.196)
+
+
+def test_spdr_gold_ignores_trade_date(monkeypatch):
+    # 全历史型：传任意日期返回相同全量（幂等 upsert 的前提）
+    f = make_spdr(monkeypatch, macro_cons_gold=lambda: SPDR)
+    assert f.fetch("2000-01-01") == f.fetch("2026-10-16")
+
+
+def test_spdr_gold_empty_returns_empty(monkeypatch):
+    # 生产路径：接口波动返回 None/空表 → []（由 collect 判 empty 告警，fetch 不炸）
+    for empty in (None, pd.DataFrame()):
+        f = make_spdr(monkeypatch, macro_cons_gold=lambda: empty)
+        assert f.fetch("2026-10-16") == []
+
+
+def test_spdr_gold_nan_rows_skipped(monkeypatch):
+    # NaN 库存 / NaT 日期行不产观测也不报错（同 _WideTableFetcher 约定）
+    df = pd.DataFrame([
+        {"日期": pd.Timestamp("2026-10-15"), "总库存": 1053.911},
+        {"日期": pd.Timestamp("2026-10-14"), "总库存": float("nan")},
+        {"日期": pd.NaT, "总库存": 1054.196},
+    ])
+    f = make_spdr(monkeypatch, macro_cons_gold=lambda: df)
+    assert by_key(f.fetch("2026-10-16")) == {("au-gld-spdr", "2026-10-15"): 1053.911}
+
+
+def test_spdr_gold_date_objects_normalized(monkeypatch):
+    # 生产真实形态：日期列是 datetime.date 对象（同 SGE 现货）——须归一 'YYYY-MM-DD'
+    df = pd.DataFrame([{"日期": dt.date(2026, 10, 15), "总库存": 1053.911}])
+    f = make_spdr(monkeypatch, macro_cons_gold=lambda: df)
+    obs = f.fetch("2026-10-16")
+    assert [(o.trade_date, o.value) for o in obs] == [("2026-10-15", 1053.911)]
+
+
+def test_spdr_gold_missing_column_raises(monkeypatch):
+    # 缺列 fail-loud（禁静默产出错误数据）——akshare 字段改名在此暴露
+    for drop in ("总库存", "日期"):
+        f = make_spdr(monkeypatch, macro_cons_gold=lambda: SPDR.drop(columns=[drop]))
+        with pytest.raises(ValueError):
+            f.fetch("2026-10-16")
+
+
+def test_spdr_gold_unknown_code_fails_loud():
+    # seed 拼错 code 在构建期暴露（fail-loud），而非静默丢数据
+    with pytest.raises(ValueError, match="GLD-XXX"):
+        SpdrGoldFetcher({"id": "test-src"}, [{"id": "x", "code": "GLD-XXX"}])
