@@ -9,7 +9,9 @@ RANGE_DAYS = {"1m": 31, "3m": 92, "6m": 183, "1y": 366, "all": None}
 @router.get("/api/sources")
 def list_sources(conn=Depends(get_conn)):
     # total_value/day_change：各 instrument 的 rn=1 最新行求和/求差；
-    # 跨 instrument 最新日期不齐（各取各的最后一行）时合计值为近似
+    # 跨 instrument 最新日期不齐（各取各的最后一行）时合计值为近似；
+    # v1.2：unit='混合' 的商品组源跨量纲（元/克+美元/盎司+吨+张+手）求和无意义 → 置 NULL，
+    # 速览卡前端显示"数据见详情"，单一位 ETF 源照旧求和
     rows = conn.execute(
         """WITH latest AS (
              SELECT i.source_id, o.value,
@@ -20,9 +22,11 @@ def list_sources(conn=Depends(get_conn)):
                   (SELECT COUNT(*) FROM instruments i WHERE i.source_id=s.id) AS inst_count,
                   (SELECT MAX(o.trade_date) FROM observations o
                      JOIN instruments i2 ON i2.id=o.instrument_id WHERE i2.source_id=s.id) AS latest_date,
-                  (SELECT SUM(value) FROM latest WHERE latest.source_id=s.id AND rn=1) AS total_value,
-                  (SELECT SUM(value-prev_v) FROM latest
-                     WHERE latest.source_id=s.id AND rn=1 AND prev_v IS NOT NULL) AS day_change
+                  CASE WHEN s.unit='混合' THEN NULL ELSE
+                    (SELECT SUM(value) FROM latest WHERE latest.source_id=s.id AND rn=1) END AS total_value,
+                  CASE WHEN s.unit='混合' THEN NULL ELSE
+                    (SELECT SUM(value-prev_v) FROM latest
+                       WHERE latest.source_id=s.id AND rn=1 AND prev_v IS NOT NULL) END AS day_change
              FROM sources s WHERE s.enabled=1 ORDER BY s.sort_order""").fetchall()
     groups: dict[str, list] = {}
     for r in rows:

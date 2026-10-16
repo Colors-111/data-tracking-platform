@@ -80,6 +80,25 @@ def test_source_detail_commodity_meta(client, conn):
     assert body["series"]["cu-warrant"] == []
 
 
+def test_list_sources_mixed_unit_null_totals(client, conn):
+    # v1.2 综合审查：unit='混合' 的商品组源跨量纲求和无意义（元/克+美元/盎司+吨+张+手）
+    # → total_value/day_change 置 NULL；单一位 ETF 源照旧求和
+    for iid, metric, d, v in [("cu-shfe-price", "price", "2026-10-14", 70000),
+                              ("cu-shfe-price", "price", "2026-10-15", 77000),
+                              ("cu-inventory", "inventory", "2026-10-14", 1000),
+                              ("cu-inventory", "inventory", "2026-10-15", 1200),
+                              ("510300", "share", "2026-10-14", 100),
+                              ("510300", "share", "2026-10-15", 103)]:
+        conn.execute("INSERT INTO observations VALUES(?,?,?,?,NULL,'t')", (iid, metric, d, v))
+    conn.commit()
+    groups = {g["group"]: g["sources"] for g in client.get("/api/sources").json()}
+    copper = next(s for s in groups["大宗商品"] if s["id"] == "copper")
+    assert copper["total_value"] is None and copper["day_change"] is None
+    assert copper["latest_date"] == "2026-10-15"   # 有数据，只是不求和
+    hs = next(s for s in groups["指数 ETF"] if s["id"] == "hs300-etf")
+    assert hs["total_value"] == 103 and hs["day_change"] == 3   # ETF 求和契约不变
+
+
 def test_unknown_source_404(client):
     assert client.get("/api/sources/nope").status_code == 404
 

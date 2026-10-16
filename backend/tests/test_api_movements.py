@@ -77,7 +77,11 @@ def test_jobs_latest(client, conn):
                  " VALUES('hs300-etf','2026-10-15','ok',5,NULL,'t','t')")
     conn.execute("INSERT INTO job_runs(source_id,trade_date,status,rows,error,started_at,finished_at)"
                  " VALUES('cu-inventory','2026-10-15','failed',0,'RuntimeError()','t','t')")
+    conn.execute("INSERT INTO job_runs(source_id,trade_date,status,rows,error,started_at,finished_at)"
+                 " VALUES('copper','2026-10-15','ok',7,NULL,'t','t')")
     conn.commit()
     body = client.get("/api/jobs/latest").json()
     statuses = {j["source_id"]: j["status"] for j in body["jobs"]}
-    assert statuses == {"hs300-etf": "ok", "cu-inventory": "failed"}
+    # v1.2 综合审查：cu-inventory 源已删（并入 copper），其历史 job_runs 不再占据状态条；
+    # 现存商品源照常显示
+    assert statuses == {"hs300-etf": "ok", "copper": "ok"}
