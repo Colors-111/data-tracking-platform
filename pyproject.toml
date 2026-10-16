@@ -1,0 +1,20 @@
+[project]
+name = "data-tracking-platform"
+version = "0.1.0"
+description = "内网数据追踪平台：ETF 份额与大宗商品日度数据采集与看板"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "akshare>=1.19.1",
+    "tenacity>=9.0",
+    "httpx>=0.27",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.0", "pandas>=2.2"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+addopts = "-m 'not network'"
+markers = ["network: 真实外部接口冒烟，默认跳过，用 -m network 运行"]

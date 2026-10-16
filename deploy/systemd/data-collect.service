@@ -1,0 +1,9 @@
+[Unit]
+Description=数据追踪平台·采集任务（docker compose run）
+After=docker.service
+OnFailure=data-notify@%n
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/dtp
+ExecStart=docker compose run --rm collect

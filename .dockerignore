@@ -1,0 +1,11 @@
+.git
+.venv
+data
+node_modules
+frontend/dist
+.superpowers
+.pytest_cache
+**/__pycache__
+docs
+.env
+deploy/
