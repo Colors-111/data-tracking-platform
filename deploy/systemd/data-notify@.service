@@ -1,0 +1,9 @@
+[Unit]
+Description=采集进程崩溃告警 %i
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/opt/dtp/.env
+ExecStart=/usr/bin/curl -s -X POST ${WEBHOOK_URL} \
+  -H "Content-Type: application/json" \
+  -d "{\"msgtype\":\"text\",\"text\":{\"content\":\"数据平台采集进程崩溃: %i\"}}"

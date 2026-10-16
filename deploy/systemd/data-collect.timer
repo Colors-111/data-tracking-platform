@@ -1,0 +1,9 @@
+[Unit]
+Description=数据追踪平台·每日采集定时器
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 16:40:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

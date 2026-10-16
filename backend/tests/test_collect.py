@@ -118,3 +118,18 @@ def test_backfill_break_on_failure_and_resume(conn, fake_source, monkeypatch):
     targets = {r["trade_date"] for r in conn.execute(
         "SELECT DISTINCT trade_date FROM observations")}
     assert targets == {"2026-01-02", "2026-01-05", "2026-01-06"}  # 断点续跑补齐
+
+def test_backup_database_creates_snapshot_and_rotates(conn, fake_source, monkeypatch, tmp_path):
+    import datetime as dt
+    dbfile = tmp_path / "dtp.db"
+    monkeypatch.setenv("DB_PATH", str(dbfile))
+    _run(conn)  # 造点数据
+    dest = C.backup_database(conn)
+    assert dest and (tmp_path / "backups" / f"dtp-{dt.date.today().isoformat()}.db").exists()
+    assert C.backup_database(conn) == dest          # 同日重复备份幂等
+    bdir = tmp_path / "backups"
+    for i in range(31):                             # 造 31 个旧备份
+        (bdir / f"dtp-2020-01-{i+1:02d}.db").write_text("x")
+    C.backup_database(conn)
+    remaining = sorted(p.name for p in bdir.glob("dtp-*.db"))
+    assert len(remaining) == 30 and "dtp-2020-01-01.db" not in remaining  # 滚动保留 30 份

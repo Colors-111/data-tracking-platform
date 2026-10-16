@@ -7,7 +7,10 @@ import datetime as dt
 import functools
 import json
 import logging
+import os
+import sqlite3
 import sys
+from pathlib import Path
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from .app.db import connect, init_db
@@ -104,6 +107,21 @@ def run_source(conn, source, instruments, run_date: str) -> dict:
     conn.commit()
     return result
 
+def backup_database(conn, keep: int = 30) -> str:
+    """每日采集成功后单文件备份（SQLite backup API，WAL 安全），滚动保留 keep 份。"""
+    db = Path(os.environ.get("DB_PATH", "data/dtp.db"))
+    bdir = db.parent / "backups"
+    bdir.mkdir(parents=True, exist_ok=True)
+    dest = bdir / f"dtp-{dt.date.today().isoformat()}.db"
+    if not dest.exists():
+        dst = sqlite3.connect(dest)
+        with dst:
+            conn.backup(dst)
+        dst.close()
+    for old in sorted(bdir.glob("dtp-*.db"))[:-keep]:
+        old.unlink()
+    return str(dest)
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--date", default=dt.date.today().isoformat())
@@ -161,6 +179,8 @@ def main(argv=None):
     bad = [r for r in results if r["status"] == "failed"]
     # 仅 failed 非零退出（触发 systemd OnFailure 崩溃告警）；
     # empty/stale 属数据质量事件，经 job_runs 与 Task 8 的汇总 webhook 报告，不算崩溃
+    if not bad:
+        backup_database(conn)   # 设计 §6：全部成功后备份，保留 30 天
     log.info("完成：%d 源，failed=%d empty/stale=%d", len(results), len(bad),
              sum(1 for r in results if r["status"] in ("empty", "stale")))
     return 1 if bad else 0
