@@ -44,3 +44,22 @@ def test_fetch_empty_df_returns_empty(cu_fetcher, monkeypatch):
     monkeypatch.setattr(mod, "ak",
                         types.SimpleNamespace(futures_inventory_em=lambda symbol: None))
     assert cu_fetcher.fetch("2026-10-16") == []   # 生产路径：接口返回空
+
+def test_missing_column_raises(cu_fetcher, monkeypatch):
+    # 锁定 _col fail-loud：缺库存列时抛 ValueError，而非静默产出错误数据
+    import backend.fetchers.akshare_cu_inventory as mod
+    monkeypatch.setattr(mod, "ak", types.SimpleNamespace(
+        futures_inventory_em=lambda symbol: pd.DataFrame([{"日期": "2026-10-15"}])))
+    with pytest.raises(ValueError):
+        cu_fetcher.fetch("2026-10-16")
+
+def test_nan_inventory_skipped(cu_fetcher, monkeypatch):
+    # 库存=NaN 的行被跳过：不产出 Observation 也不报错
+    import backend.fetchers.akshare_cu_inventory as mod
+    monkeypatch.setattr(mod, "ak", types.SimpleNamespace(
+        futures_inventory_em=lambda symbol: pd.DataFrame([
+            {"日期": "2026-10-14", "库存": 9407.0},
+            {"日期": "2026-10-15", "库存": float("nan")},
+        ])))
+    obs = cu_fetcher.fetch("2026-10-16")
+    assert len(obs) == 1 and obs[0].trade_date == "2026-10-14"

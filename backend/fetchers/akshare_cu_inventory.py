@@ -20,10 +20,14 @@ def _col(df, candidates, what):
             return c
     raise ValueError(f"未找到{what}列，实际列: {list(df.columns)}")
 
-def _norm_date(v) -> str:
+def _norm_date(v) -> str | None:
+    if pd.isna(v):   # NaN/NaT 日期：返回 None 让调用方跳过该行，而非整个抓取崩掉
+        return None
     # np.integer 单列出来：iterrows 行内 dtype 混合时 int64 常升位 float64（isinstance float 可命中），
     # 但纯整型行会保持 np.int64，它不是 Python int 的子类
     if isinstance(v, (int, float, np.integer, np.floating)):
+        # epoch-ms 分支锚定 UTC：pandas to_json 的 epoch-ms 以 UTC 午夜为基准，
+        # 只有 UTC 转换才能无损还原日期；按北京午夜解释会差一天
         return dt.datetime.fromtimestamp(int(v) / 1000, tz=dt.timezone.utc).strftime("%Y-%m-%d")
     return str(v)[:10].replace("/", "-")   # '2026-07-07' / '2026/07/07' / Timestamp
 
@@ -49,5 +53,8 @@ class FuturesInventoryFetcher:
                 v = r[c_v]
                 if pd.isna(v):
                     continue
-                out.append(Observation(iid, "inventory", _norm_date(r[c_d]), float(v)))
+                d = _norm_date(r[c_d])
+                if d is None:   # NaT/NaN 日期行：跳过而非崩掉整个抓取
+                    continue
+                out.append(Observation(iid, "inventory", d, float(v)))
         return out
