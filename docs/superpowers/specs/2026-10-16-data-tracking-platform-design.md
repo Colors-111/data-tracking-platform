@@ -70,6 +70,7 @@ CREATE TABLE sources (
   fetcher       TEXT NOT NULL,           -- 'akshare.sse_etf_scale'（注册表键）
   unit          TEXT,                    -- '亿份' | '元/吨' | '吨'
   movement_th   REAL,                    -- 异动阈值（环比 %，如 1.0）
+  lag_days      INTEGER DEFAULT 0,       -- 数据发布滞后（T+1 源=1）；采集目标日=交易日-lag_days
   enabled       INTEGER DEFAULT 1,
   sort_order    INTEGER
 );
@@ -123,6 +124,7 @@ Fetcher 协议（每个数据源实现一个）：
 ```python
 class Fetcher(Protocol):
     source_id: str
+    lag_days: int            # 数据发布滞后天数（如上交所份额 T+1 → 1）
     def fetch(self, trade_date: date) -> list[Observation]:
         """返回该源当日全部观测；失败抛异常，由执行器捕获"""
 ```
@@ -185,7 +187,7 @@ ExecStart=docker compose -f /opt/dtp/docker-compose.yml run --rm collect
 | GET | `/api/series?instruments=a,b&metric=share&range=6m&normalize=1` | 跨源取序列，供对比 chips；normalize=1 时返回基线 100 归一化 |
 | GET | `/api/movements?date=today` | 今日异动榜：跨源环比超过 `movement_th` 按 \|pct\| 降序 |
 | GET | `/api/jobs/latest` | 抓取状态条：各源最近一次 job_runs |
-| GET | `/api/meta/trading-dates` | 可选时间范围（供时间切换与回补 UI） |
+| GET | `/api/meta/trading-dates` | 可选时间范围（v1 前端用固定档位切换，此端点延后实现） |
 
 约定：所有序列响应携带 `as_of_date`（数据实际日期）；Pydantic schema 定义于 `backend/app/schemas.py`；API 只读，无鉴权（内网）。
 
