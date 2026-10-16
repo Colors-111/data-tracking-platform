@@ -643,7 +643,7 @@ def fake_source(conn):
 @register("fake.ok")
 class OkFetcher:
     source_id = "fake"
-    lag_days = 0
+    lag_days = 1   # 与真实 T+1 源一致；backfill 续跑用例依赖该目标日链
     def __init__(self, source, instruments): pass
     def fetch(self, trade_date):
         return [Observation("f1", "price", trade_date, 42.0)]
@@ -726,7 +726,7 @@ def test_backfill_break_on_failure_and_resume(conn, fake_source, monkeypatch):
         source_id = "fake"; lag_days = 1
         def __init__(self, source, instruments): pass
         def fetch(self, trade_date):
-            if trade_date == "2026-01-06":   # 目标日=第2天时失败
+            if trade_date == "2026-01-05":   # d2=01-06 的目标日（lag1）失败
                 raise RuntimeError("半路炸")
             return [Observation("f1", "price", trade_date, 42.0)]
 
@@ -876,7 +876,7 @@ def main(argv=None):
     init_db(conn)
     where, params = ("WHERE s.enabled=1", ()) if not args.source else \
                     ("WHERE s.id=?", (args.source,))
-    sources = conn.execute(f"SELECT * FROM sources {where} ORDER BY sort_order",
+    sources = conn.execute(f"SELECT * FROM sources s {where} ORDER BY sort_order",
                            params).fetchall()
 
     if args.backfill:
@@ -885,7 +885,6 @@ def main(argv=None):
         dates = trade_dates_from_to(args.d_from, args.d_to)
         if not dates:
             log.error("区间内无交易日：%s ~ %s", args.d_from, args.d_to)
-            conn.close()
             return 1
         log.info("回补 %s ~ %s，共 %d 个交易日", args.d_from, args.d_to, len(dates))
         failed = []
@@ -904,9 +903,7 @@ def main(argv=None):
                     break   # 断点续跑：保留现场，下次回补从该日重试
         if failed:
             log.error("回补存在失败源/日期：%s（修复后重跑 --backfill 即续传）", failed)
-            conn.close()
             return 1
-        conn.close()
         return 0
 
     results = []
@@ -922,7 +919,7 @@ def main(argv=None):
     # empty/stale 属数据质量事件，经 job_runs 与 Task 8 的汇总 webhook 报告，不算崩溃
     log.info("完成：%d 源，failed=%d empty/stale=%d", len(results), len(bad),
              sum(1 for r in results if r["status"] in ("empty", "stale")))
-    conn.close()
+    # 不显式 close：CLI 进程退出即释放；测试会注入连接，close 会伤及 fixture
     return 1 if bad else 0
 
 if __name__ == "__main__":
