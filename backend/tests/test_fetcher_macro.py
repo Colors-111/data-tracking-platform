@@ -10,7 +10,8 @@
    composite（编排增量）按 code 'AU9999'/'XAU' import 委托。
    实测注记（2026-10-16）：任务书预期 macro_usa_cftc_nc_holding 实为【外汇】非商业
    （无商品列）；商品非商业在 macro_usa_cftc_c_holding，且四接口均无铜品种——
-   CFTC-CU 无法由 akshare 供给，fetcher 对其构建期 fail-loud（见对应测试）。"""
+   铜的 CFTC 无法由 akshare 供给（seed 不设 cu-cftc，需直连 COT 官方报告另行
+   立项），未支持品种构建期 fail-loud（见对应测试）。"""
 import calendar
 import datetime as dt
 import types
@@ -158,12 +159,13 @@ def test_cftc_gold_net(monkeypatch):
     assert len(obs) == len(expected)
     assert all(o.metric == "positioning" for o in obs)
 
-def test_cftc_copper_unsupported_fails_loud():
-    # akshare 四个 CFTC 接口均无铜品种列（金十商品非商业仅 12 商品，见模块 docstring）——
-    # CFTC-CU 构建期即报错并说明出路，而非每日静默 empty
+def test_cftc_unsupported_commodity_fails_loud():
+    # akshare 四个 CFTC 接口均无铜品种列（金十商品非商业仅 12 商品，见模块 docstring），
+    # 铜的 CFTC 需直连 COT 官方报告另行立项（seed 不设 cu-cftc）——
+    # 未支持品种（如 CFTC-ZN）构建期即报错并说明出路，而非每日静默 empty
     with pytest.raises(ValueError, match="铜"):
         build_fetcher("akshare.cftc_nc", {"id": "test-src"},
-                      [{"id": "CFTC-CU", "code": "CFTC-CU"}])
+                      [{"id": "CFTC-ZN", "code": "CFTC-ZN"}])
 
 # ---------- 央行黄金储备（akshare.gold_reserve） ----------
 
