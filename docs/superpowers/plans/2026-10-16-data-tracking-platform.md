@@ -2225,37 +2225,54 @@ import { ref, onMounted } from "vue";
 import { api } from "../api";
 import MovementsTable from "../components/MovementsTable.vue";
 import SourceTiles from "../components/SourceTiles.vue";
+import JobStatus from "../components/JobStatus.vue";
 
 const movements = ref([]);
-const groups = ref([]);
+const groups = ref([]);        // 直接用 /api/sources 的分组结构（真实分组，非拍平）
 const asOf = ref(null);
-const jobCount = ref(0);
+const loaded = ref(false);     // 防数据到达前闪现"今日无异动"假空态
+const error = ref(null);
 
 onMounted(async () => {
-  const [mv, src] = await Promise.all([api.movements(), api.sources()]);
-  movements.value = mv.movements;
-  asOf.value = mv.as_of_date;
-  groups.value = src.flatMap(g => g.sources);
+  try {
+    const [mv, src] = await Promise.all([api.movements(), api.sources()]);
+    movements.value = mv.movements;
+    asOf.value = mv.as_of_date;
+    groups.value = src;
+    loaded.value = true;
+  } catch (e) {
+    error.value = String(e.message ?? e);   // Task 13 约定：view 内 catch → 主区 .banner
+  }
 });
 </script>
 
 <template>
-  <div class="banner">总览<span class="badge">数据截至 {{ asOf ?? "—" }}</span></div>
-  <div class="card sec">
-    <h3>⚡ 今日异动 <small>跨全部数据源 · 按变化幅度排序</small></h3>
-    <MovementsTable :movements="movements" />
-  </div>
-  <div class="card sec">
-    <h3>分组速览</h3>
-    <SourceTiles :groups="[{ group: '', sources: groups }]" />
-  </div>
+  <div class="banner error" v-if="error">加载失败：{{ error }}</div>
+  <div class="card" v-else-if="!loaded">总览加载中…</div>
+  <template v-else>
+    <div class="banner">
+      总览<span class="badge">数据截至 {{ asOf ?? "—" }}</span>
+      <JobStatus />
+    </div>
+    <div class="card sec">
+      <h3>⚡ 今日异动 <small>跨全部数据源 · 按变化幅度排序</small></h3>
+      <MovementsTable :movements="movements" :as-of="asOf" />
+    </div>
+    <div class="card sec">
+      <h3>分组速览</h3>
+      <SourceTiles :groups="groups" />
+    </div>
+  </template>
 </template>
 
 <style scoped>
 .sec { margin-top: 14px; }
 h3 small { color:#999; font-size:11px; font-weight:400; margin-left:8px; }
+.banner.error { background:#7f8c8d; }   /* 错误态 banner 用中性色，别和正常红色 banner 混淆 */
 </style>
 ```
+
+SourceTiles 的 tile 含值行（PRD 4.2：名称、最新合计值、今日变化）：`fmtVal(s.total_value, s.unit)` + 变化 span（pct 前端算，基 = total_value - day_change；hasChange 守卫防除零/null）。对应后端 `/api/sources` 需带 total_value/day_change 字段（latest CTE，见 Task 15 审查修复——执行本计划时若 list_sources 无该字段先补上）。
 
 - [ ] **Step 4: 构建冒烟**
 
