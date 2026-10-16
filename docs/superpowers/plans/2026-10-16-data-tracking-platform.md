@@ -1131,9 +1131,10 @@ ExecStart=/usr/bin/curl -s -X POST ${WEBHOOK_URL} \
 # 构建 + 启动 Web（http://<内网IP>:8000）
 docker compose up -d --build web
 
-# 首次回补历史（沪深300 份额自 2026-01-01，可改 --from 2015-01-01 全量）
+# 首次回补历史（默认全量：上交所份额自 2015-01-01，约 2500 个交易日，需 40 分钟量级；
+# 如需快速验证可先 --from 2026-01-01，之后随时用 --backfill 断点续跑补齐）
 docker compose run --rm collect uv run --no-sync python -m backend.collect \
-  --backfill --from 2026-01-01
+  --backfill --from 2015-01-01
 
 # 定时采集（宿主机）
 sudo cp deploy/systemd/* /etc/systemd/system/
