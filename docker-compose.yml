@@ -1,0 +1,19 @@
+services:
+  web:
+    build: .
+    ports: ["8000:8000"]
+    volumes: ["./data:/app/data"]
+    environment:
+      - TZ=Asia/Shanghai
+      - DB_PATH=/app/data/dtp.db
+    restart: unless-stopped
+
+  collect:
+    build: .
+    volumes: ["./data:/app/data"]
+    environment:
+      - TZ=Asia/Shanghai
+      - DB_PATH=/app/data/dtp.db
+      - WEBHOOK_URL=${WEBHOOK_URL:-}
+    command: ["uv", "run", "--no-sync", "python", "-m", "backend.collect"]
+    profiles: ["tools"]   # 不随 up 启动，仅 docker compose run --rm collect 调用
