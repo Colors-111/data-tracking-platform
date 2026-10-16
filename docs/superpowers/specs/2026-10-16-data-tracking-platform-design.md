@@ -38,6 +38,7 @@
 
 要点：
 
+- **运行环境整体容器化（用户约束）**：前后端构建产物打进同一 Docker 镜像，`docker compose` 编排 `web`（常驻）与 `collect`（按需运行）；宿主机只需安装 Docker，Python/Node 环境完全隔离
 - 除 FastAPI 外**零常驻进程**；采集器与 Web 服务通过 SQLite 解耦（WAL 下读不阻塞写）
 - 单源失败不阻断：逐源 try/except，失败的源标记 `failed`，看板其他部分照常
 - 告警双通道：脚本收尾统一推送汇总（成功行数/失败原因/新鲜度）到 webhook；进程级崩溃由 systemd `OnFailure=` 模板单元兜底（curl webhook，无需 MTA）
@@ -52,7 +53,8 @@
 | Web | FastAPI + uvicorn | 只读 API，StaticFiles 托管前端构建产物 |
 | 前端 | Vue3 + Vite + vue-echarts | ECharts 6（dataZoom/tooltip/图例开关/双Y轴原生支持） |
 | 样式 | 纯 CSS | 深色侧边栏贴参考图，不引 UI 框架 |
-| 部署 | systemd service + timer | `deploy/systemd/` 提供 unit 文件 |
+| 环境隔离 | Docker + docker compose | 多阶段构建：`node:20-slim` 编译前端 → `python:3.12-slim` + uv 运行时；宿主机仅装 Docker |
+| 部署 | docker compose + 宿主机 systemd timer | timer 触发 `docker compose run --rm collect`，保留补跑与 OnFailure 告警 |
 
 明确排除项及理由（调研结论）：Grafana（无法实现参考图的定制布局/导航树，SQLite 插件限制多）、Streamlit（样式受组件库约束、多页交互弱）、Evidence.dev（动态对比交互弱）、DuckDB 主存储（读写进程互斥，与常驻 Web 连接冲突）、APScheduler/Prefect/Airflow（systemd timer 已覆盖补跑/告警/日志，编排平台属过重）。
 
@@ -150,7 +152,7 @@ class Fetcher(Protocol):
 
 **历史回补**：`collect.py --backfill --from 2015-01-01 [--source hs300-etf]`——逐交易日循环调用（上交所接口按日快照，天然支持回补）；支持断点续跑（跳过已有日期）。
 
-**systemd 部署**（`deploy/systemd/`）：
+**systemd 部署**（宿主机，`deploy/systemd/`）：
 
 ```ini
 # data-collect.timer
@@ -158,9 +160,21 @@ class Fetcher(Protocol):
 OnCalendar=Mon..Fri *-*-* 16:40:00
 Persistent=true
 
-# data-collect.service 失败时
-# OnFailure=data-notify@%n → curl $WEBHOOK_URL "采集进程崩溃: %i"
+# data-collect.service
+[Service]
+ExecStart=docker compose -f /opt/dtp/docker-compose.yml run --rm collect
+# 失败兜底：OnFailure=data-notify@%n → curl $WEBHOOK_URL "采集进程崩溃: %i"
 ```
+
+**容器化与部署（docker compose）**：
+
+- **单一镜像、多阶段构建**：阶段 1 `node:20-slim` 执行 `npm ci && npm run build` 产出 `dist/`；阶段 2 `python:3.12-slim` + uv 安装后端依赖并拷入 `dist/`。`web` 与 `collect` 共用该镜像，杜绝"构建环境/运行环境"污染宿主机
+- **compose 服务**：
+  - `web`：`8000:8000`，`restart: unless-stopped`，挂载 `./data:/app/data`
+  - `collect`：同镜像，由宿主机 systemd timer `docker compose run --rm collect` 按需执行（保留 Persistent 补跑与 OnFailure 告警能力）
+- **环境变量**：`TZ=Asia/Shanghai`（容器内交易日判断与时间戳必须用北京时间）、`WEBHOOK_URL`、`DB_PATH=/app/data/dtp.db`
+- SQLite WAL 运行于本地 bind mount（满足"非 NFS"约束）；数据库与备份（`./data/backups`）均在宿主机卷上，容器可随时重建
+- 开发/测试同样走容器（`docker compose run --rm collect pytest`、`npm run build` 在镜像构建中完成），保证编译与运行环境隔离；本机 uv venv 仅作为可选快速迭代路径
 
 ## 7. API 设计
 
@@ -230,8 +244,10 @@ data-tracking-platform/
 │   ├── collect.py      # 采集入口（含 --backfill）
 │   └── tests/
 ├── frontend/           # Vue3 + Vite
-├── deploy/systemd/     # *.service *.timer
+├── deploy/systemd/     # 宿主机 *.service *.timer（触发 docker compose run）
 ├── docs/               # PRD.md / superpowers/specs/
+├── Dockerfile          # 多阶段：node 构建前端 → python 运行时
+├── docker-compose.yml  # web（常驻）+ collect（按需）
 └── pyproject.toml      # uv 管理
 ```
 
