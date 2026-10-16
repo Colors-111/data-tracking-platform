@@ -1863,8 +1863,11 @@ const BARS = "▁▂▃▄▅▆▇█";
 export function sparkBars(vals) {
   if (!vals || vals.length === 0) return "";
   const min = Math.min(...vals), max = Math.max(...vals);
-  const span = max - min || 1;
-  return vals.map(v => BARS[Math.round(((v - min) / span) * (BARS.length - 1))]).join("");
+  const span = max - min;
+  return vals.map(v => {
+    const t = span ? (v - min) / span : 0.5;   // 等值取中位柱；half-down 防止 3.5 被进位
+    return BARS[Math.ceil(t * (BARS.length - 1) - 0.5)];
+  }).join("");
 }
 
 export function fmtVal(v, unit) {
