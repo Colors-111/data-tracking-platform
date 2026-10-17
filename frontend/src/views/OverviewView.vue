@@ -5,6 +5,7 @@ import { api } from "../api";
 import MovementsTable from "../components/MovementsTable.vue";
 import SourceTiles from "../components/SourceTiles.vue";
 import JobStatus from "../components/JobStatus.vue";
+import FlowsCard from "../components/FlowsCard.vue";
 
 const movements = ref([]);
 const groups = ref([]);   // 保留 /api/sources 的分组结构 [{group, sources}]，直接交给 SourceTiles
@@ -32,6 +33,8 @@ onMounted(async () => {
     <div class="banner">总览<span class="badge">数据截至 {{ asOf ?? "—" }}</span>
       <JobStatus />
     </div>
+    <!-- v1.3 资金异动卡：自取数失败只降级本卡；movements 供已跟踪（code→源）判定 -->
+    <FlowsCard class="sec" :movements="movements" />
     <div class="card sec">
       <h3>⚡ 今日异动 <small>跨全部数据源 · 按变化幅度排序</small></h3>
       <MovementsTable :movements="movements" :as-of="asOf" />
