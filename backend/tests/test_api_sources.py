@@ -267,3 +267,28 @@ def test_empty_source_has_no_category_fields(client):
     body = client.get("/api/sources/coal-price").json()
     assert "category_total" not in body
     assert "coverage" not in body
+
+def test_category_excludes_wrong_index_funds(client, conn):
+    """类别聚合排除同名异指品种：标普500不入中证500、创业板50不入上证50（口径实测修正）"""
+    day = "2026-10-15"
+    rows = [
+        ("500001", "标普500ETF华夏", 500.0),        # 名含 500，实为标普
+        ("510500", "500ETF", 58.0),                # 真中证500
+        ("159922", "中证500ETF嘉实", 27.5),          # 已跟踪
+        ("510050", "50ETF", 89.0),                 # 真上证50
+        ("159949", "创业板50ETF华安", 178.0),        # 名含 50ETF，实为创业板50
+    ]
+    for code, name, sh in rows:
+        conn.execute("INSERT INTO etf_snapshots VALUES(?,?,?,?,?,datetime('now'))",
+                     (day, code, name, "SSE", sh))
+    for iid, v in [("512500", 59.0), ("510050", 89.0)]:
+        conn.execute("INSERT INTO observations VALUES(?, 'share', ?, ?, NULL, 't')", (iid, day, v))
+    conn.commit()
+    body = client.get("/api/sources/csi500-etf?range=1m").json()
+    cat = dict(body["category_total"])
+    assert cat[day] == pytest.approx(85.5)   # 58 + 27.5；标普500 的 500 被排除
+    assert body["coverage"] == pytest.approx(69.0, abs=0.1)  # 59/85.5
+    body50 = client.get("/api/sources/sse50-etf?range=1m").json()
+    cat50 = dict(body50["category_total"])
+    assert cat50[day] == pytest.approx(89.0)  # 创业板50 的 178 被排除
+    assert body50["coverage"] == pytest.approx(100.0, abs=0.1)
