@@ -19,7 +19,8 @@ export function flowRowTarget(code, trackedMap) {
 
 // code→source 映射：今日异动行自带 source_id（instrument_id=code，覆盖已注册品种）
 // ∪ 自选跟踪源详情（etf-watchlist 的 cards，覆盖用户一键加入的品种）；
-// 同 code 冲突时自选跟踪胜出（注册后该 instrument 归属自选源，意图更新）
+// 同 code 冲突时自选跟踪胜出（前端合成判定：注册后该 code 出现在自选源详情中即判
+// 已跟踪；后端不做跨源归属变更，原源 instrument 保留）
 export function mergeTracked(movements = [], watchlist = null) {
   const map = {};
   for (const m of movements ?? [])

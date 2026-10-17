@@ -94,7 +94,7 @@ const sides = [
                 <td class="num" :class="pctColor(r.change)">{{ fmtPct(r.pct) }}</td>
                 <td class="act">
                   <button v-if="!tracked.has(r.code)" class="add-btn"
-                          :disabled="busy.has(r.code)" @click="addTracking(r.code)">➕ 加入跟踪</button>
+                          :disabled="busy.has(r.code)" @click="addTracking(r)">➕ 加入跟踪</button>
                   <button v-else class="done" disabled>已跟踪 ✓</button>
                   <span v-if="rowMsg[r.code]" class="row-msg">{{ rowMsg[r.code] }}</span>
                 </td>

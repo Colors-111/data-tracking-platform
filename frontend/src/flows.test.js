@@ -52,7 +52,7 @@ describe("已跟踪跳转（flowRowTarget / mergeTracked）", () => {
     expect(flowRowTarget("588200", map)).toBeNull();
     expect(flowRowTarget("588200", null)).toBeNull();
   });
-  it("冲突时自选跟踪胜出（注册后归属自选源）", () => {
+  it("冲突时自选跟踪胜出（前端合成判定：注册后该 code 出现在自选源详情中即判已跟踪，后端不做跨源归属变更）", () => {
     const map = mergeTracked(
       [{ instrument_id: "510300", source_id: "hs300-etf" }],
       { id: "etf-watchlist", cards: [{ instrument_id: "510300" }] });
