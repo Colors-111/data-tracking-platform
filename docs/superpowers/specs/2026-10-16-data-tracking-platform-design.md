@@ -164,7 +164,16 @@ class Fetcher(Protocol):
 | `alumina` 氧化铝 | SHFE氧化铝价、现货价、东财库存、SHFE仓库+厂库仓单 | 同上（AO/AO0/'ao'/'氧化铝仓库/厂库'）；纯国内品种无 LME/COMEX |
 | `gold` 黄金 | SHFE沪金价(price/元/克)、SGE现货价(price,实现时实测)、SHFE仓单(warehouse/千克)、央行储备(reserve/万盎司,**月频**)、国内黄金ETF持仓(holding/亿份,518880/518800/518660 复用 etf_scale)、CFTC非商业净多(positioning) | `futures_zh_daily_sina('AU0')`、`spot_hist_sge`、`futures_shfe_warehouse_receipt`、`macro_china_foreign_exchange_gold`、etf 接口、CFTC |
 
-后续爬虫批（不在本轮）：LME 价格、COMEX 库存、SMM 社会库存、TC/RC 加工费、上海溢价、SPDR GLD。schema 变更：**instruments 加 `unit` 列**（混合单位源按品种显示）；异动榜天然兼容（按 instrument 环比）；月频数据与日频同图（TrendChart connectNulls）。
+### 5.3 v1.3 全市场 ETF 资金流（2026-10-17 立项，用户确认"全市场扫描+首页卡"）
+
+**动机**：资金异动发现不能只覆盖已注册品种（1678 只全市场 vs 已跟踪 24 只）。
+
+- **新表 `etf_snapshots`**（trade_date, code, name, exchange, shares, fetched_at，PK(trade_date,code)，无 FK——覆盖全市场未注册代码）：每日采集时随例行流程抓两所全市场快照落库（约 1678 行/日 ≈ 43 万行/年，SQLite 舒适区）
+- **API**：`GET /api/flows?date=&limit=10` → `{as_of_date, total_change, count, top_in[], top_out[]}`（环比由快照表窗口计算）；`POST /api/watchlist {code}` → 写入 instruments（自选源 `etf-watchlist`，分组"自选跟踪"）**并从 etf_snapshots 表回填该 code 全部历史 observations**（零外部调用）
+- **前端**：总览首页新增"资金异动"卡（全市场净流入合计 + TOP5 申购/赎回，行点击下钻 /flows）；新增 `/flows` 全榜页（日期切换 + 申购/赎回双榜 + 一键加入跟踪）
+- 采集端：collect 例行流程末尾追加全市场快照抓取（SSE 单日 1 次 + SZSE 区间 1 次，失败隔离不阻断主采集）；"加入跟踪"历史回补从快照表 INSERT SELECT，**同时解决既有"扩成分需 --force 重抓"的历史缺口问题**（已注册源新成分若在快照表中同样可回填）
+
+后续爬虫批（不在本轮）：LME 价格、COMEX 库存、SMM 社会库存、TC/RC 加工费、上海溢价、SPDR GLD（✅ 已于 v1.2.1 接入）、铜 CFTC（直连 COT 官方报告）、LME 替代数据源。
 
 ## 6. 采集管道
 
