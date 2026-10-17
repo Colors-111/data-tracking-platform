@@ -20,7 +20,7 @@ def client(conn, tmp_path, monkeypatch):
 @pytest.fixture
 def snaps(conn):
     """两日 × 多品种：510300 沪 100→103；159915 深 50→45；
-       588000/159901 持平（并列 change=0，锁定按代码稳定排序的 tiebreak）；
+       588000/159901 持平（change=0：符号过滤后不上任何榜）；
        159516 仅末日（无前值，不进变动榜但计入 count）。"""
     conn.executemany("INSERT INTO etf_snapshots VALUES (?,?,?,?,?,?)", [
         ("2026-10-14", "510300", "沪深300ETF", "SSE", 100.0, "t"),
@@ -43,9 +43,10 @@ def test_flows_default(client, snaps):
     assert r["as_of_date"] == "2026-10-15"
     assert r["count"] == 5                     # 当日快照全部代码（含无前值的 159516）
     assert r["total_change"] == pytest.approx(-2.0)   # +3 -5 +0 +0
-    # 平分按代码升序：159901 < 588000
-    assert [x["code"] for x in r["top_in"]] == ["510300", "159901", "588000", "159915"]
-    assert [x["code"] for x in r["top_out"]] == ["159915", "588000", "159901", "510300"]
+    # 榜按符号过滤：top_in 只收 change>0、top_out 只收 change<0；
+    # 持平代码（159901/588000）与单边日的零变动行不得填满反向榜
+    assert [x["code"] for x in r["top_in"]] == ["510300"]
+    assert [x["code"] for x in r["top_out"]] == ["159915"]
     top = r["top_in"][0]
     assert top == {"code": "510300", "name": "沪深300ETF", "exchange": "SSE",
                    "shares": 103.0, "change": 3.0, "pct": 3.0}
@@ -57,6 +58,29 @@ def test_flows_limit(client, snaps):
     r = client.get("/api/flows", params={"limit": 1}).json()
     assert [x["code"] for x in r["top_in"]] == ["510300"]
     assert [x["code"] for x in r["top_out"]] == ["159915"]
+
+
+def test_flows_one_sided_day(client, conn):
+    """单边日：全市场净申购 → top_out 为空；全市场净赎回 → top_in 为空
+       （反向榜不得被正/负变动之外的行填充）。"""
+    def ins(d, vals):
+        conn.executemany(
+            "INSERT OR REPLACE INTO etf_snapshots VALUES (?,?,?,?,?,?)",
+            [(d, c, f"ETF{c}", "SSE" if c[0] == "5" else "SZSE", v, "t")
+             for c, v in vals.items()])
+        conn.commit()
+
+    ins("2026-10-20", {"510300": 100.0, "159915": 50.0, "588000": 200.0})
+    ins("2026-10-21", {"510300": 110.0, "159915": 55.0, "588000": 220.0})
+    r = client.get("/api/flows", params={"date": "2026-10-21"}).json()
+    assert r["count"] == 3
+    assert r["total_change"] == pytest.approx(35.0)   # +10 +5 +20
+    assert [x["code"] for x in r["top_in"]] == ["588000", "510300", "159915"]
+    assert r["top_out"] == []                          # 净申购日无赎回榜
+    ins("2026-10-22", {"510300": 90.0, "159915": 40.0, "588000": 180.0})
+    r = client.get("/api/flows", params={"date": "2026-10-22"}).json()
+    assert [x["code"] for x in r["top_out"]] == ["588000", "510300", "159915"]
+    assert r["top_in"] == []                           # 净赎回日无申购榜
 
 
 def test_flows_first_day_no_prev(client, snaps):

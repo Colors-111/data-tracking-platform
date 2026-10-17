@@ -127,7 +127,7 @@ def test_main_daily_with_source_skips_snapshot(conn, monkeypatch):
 
 def test_main_backfill_snapshot_prepass_with_coverage(conn, monkeypatch):
     """backfill 预跑快照历史（同 target 语义=前一交易日，一次回补即得全史）；
-       已有快照的日期按日覆盖门控跳过——重跑零开销。"""
+       已有快照的日期按【逐所】覆盖门控跳过——两所行齐全才零开销重跑。"""
     monkeypatch.setattr(C, "connect", lambda: conn)
     monkeypatch.setattr(C, "trade_dates_from_to",
                         lambda a, b: ["2026-01-05", "2026-01-06"])
@@ -136,10 +136,12 @@ def test_main_backfill_snapshot_prepass_with_coverage(conn, monkeypatch):
 
     def fake_snap(c, target, now):
         calls.append(target)
-        c.execute("INSERT OR REPLACE INTO etf_snapshots VALUES (?,?,?,?,?,?)",
-                  (target, "000001", "标记", "SSE", 1.0, now))
+        c.executemany(
+            "INSERT OR REPLACE INTO etf_snapshots VALUES (?,?,?,?,?,?)",
+            [(target, "000001", "标记沪", "SSE", 1.0, now),
+             (target, "000002", "标记深", "SZSE", 1.0, now)])
         c.commit()
-        return 1
+        return 2
 
     monkeypatch.setattr(C, "collect_market_snapshot", fake_snap)
     argv = ["--backfill", "--from", "2026-01-05", "--to", "2026-01-06",
@@ -148,6 +150,36 @@ def test_main_backfill_snapshot_prepass_with_coverage(conn, monkeypatch):
     assert calls == ["2026-01-02", "2026-01-05"]   # 01-05(一)→01-02(五)；01-06(二)→01-05(一)
     assert C.main(argv) == 0
     assert calls == ["2026-01-02", "2026-01-05"]   # 第二次全命中覆盖门控，零调用
+
+
+def test_main_backfill_repairs_partial_day(conn, monkeypatch):
+    """单所失败留下的部分日（仅 SSE 行）不算已覆盖：下次回补预跑仍对该日
+       发起采集并补齐另一所行（INSERT OR REPLACE 幂等自愈）。"""
+    monkeypatch.setattr(C, "connect", lambda: conn)
+    monkeypatch.setattr(C, "trade_dates_from_to", lambda a, b: ["2026-01-05"])
+    monkeypatch.setattr(C, "fetch_with_retry", lambda f, d: [])
+    # 预置部分日：01-02 只有 SSE 行（模拟当日深交所拒连被跳过）
+    conn.execute("INSERT INTO etf_snapshots VALUES "
+                 "('2026-01-02','510300','沪深300ETF','SSE',100.0,'t')")
+    conn.commit()
+    calls = []
+
+    def fake_snap(c, target, now):
+        calls.append(target)
+        c.executemany(
+            "INSERT OR REPLACE INTO etf_snapshots VALUES (?,?,?,?,?,?)",
+            [(target, "510300", "沪深300ETF", "SSE", 100.0, now),
+             (target, "159915", "创业板ETF", "SZSE", 50.0, now)])
+        c.commit()
+        return 2
+
+    monkeypatch.setattr(C, "collect_market_snapshot", fake_snap)
+    assert C.main(["--backfill", "--from", "2026-01-05", "--to", "2026-01-05",
+                   "--source", "etf-watchlist"]) == 0
+    assert calls == ["2026-01-02"]   # 部分日不被覆盖门控吞掉
+    ex = {r["exchange"] for r in conn.execute(
+        "SELECT exchange FROM etf_snapshots WHERE trade_date='2026-01-02'")}
+    assert ex == {"SSE", "SZSE"}     # 补齐后两所齐全
 
 
 def test_main_backfill_other_source_skips_snapshot(conn, monkeypatch):

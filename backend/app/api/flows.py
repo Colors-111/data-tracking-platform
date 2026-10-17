@@ -44,11 +44,13 @@ def flows(date: str = Query(None), limit: int = Query(10, ge=1, le=100),
             "pct": round((r["shares"] / r["prev_shares"] - 1) * 100, 2),
         })
     changed.sort(key=lambda x: (-x["change"], x["code"]))   # 平分按代码稳定排序
+    # 榜按符号过滤：净申购榜只收 change>0、净赎回榜只收 change<0——
+    # 持平代码不上任何榜，单边净申购（赎回）日反向榜为空而非被填满
     return {"as_of_date": as_of,
             "total_change": round(total, 4) if changed else None,
             "count": len(rows),           # 全市场快照当日全部代码数
-            "top_in": changed[:limit],    # 申购榜：净流入降序前 N
-            "top_out": changed[::-1][:limit]}   # 赎回榜：净流出升序前 N
+            "top_in": [x for x in changed if x["change"] > 0][:limit],
+            "top_out": [x for x in changed if x["change"] < 0][::-1][:limit]}
 
 
 class WatchlistIn(BaseModel):

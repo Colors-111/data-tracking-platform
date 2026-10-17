@@ -159,8 +159,9 @@ def _snapshot_branch(df, trade_date: str, exchange: str, now_iso: str) -> list[t
 def collect_market_snapshot(conn, target_date: str, now_iso: str) -> int:
     """全市场 ETF 份额快照落 etf_snapshots（PK(trade_date, code) 幂等）。
        逐所 try/except：任一所失败（含重试耗尽）只 log.warning 跳过——
-       快照采集独立于逐源 run_source，失败不写 job_runs、不影响退出码，
-       缺失部分由次日例行采集以 INSERT OR REPLACE 幂等补齐。
+       快照采集独立于逐源 run_source，失败不写 job_runs、不影响退出码。
+       单所失败留下的部分日不算已覆盖，由下次回补预跑的逐所覆盖门控
+       自动补齐（INSERT OR REPLACE 幂等，见 main() 快照预跑）。
        返回本次写入行数（两所全失败/全空 → 0，绝不抛出）。"""
     d8 = target_date.replace("-", "")
     written = 0
@@ -169,8 +170,8 @@ def collect_market_snapshot(conn, target_date: str, now_iso: str) -> int:
         try:
             rows = _snapshot_branch(fetch(d8), target_date, exchange, now_iso)
         except Exception as e:
-            log.warning("全市场快照 %s 采集失败，跳过（其余所照常，次日补齐）: %s",
-                        exchange, e)
+            log.warning("全市场快照 %s 采集失败，跳过（其余所照常，该日由下次"
+                        "回补预跑的逐所门控补齐）: %s", exchange, e)
             continue
         if rows:
             conn.executemany(
@@ -222,12 +223,12 @@ def main(argv=None):
             now_iso = dt.datetime.now().isoformat(timespec="seconds")
             for d in dates:
                 target = previous_trade_date(d, 1)
-                # 按日覆盖门控：已有快照的日期跳过（重跑零开销）；--force 不
-                # 覆盖此门控（INSERT OR REPLACE 本就幂等，重抓全史纯属浪费）；
-                # 单所失败留下的部分日期不算未覆盖——次日例行采集幂等补齐
+                # 逐所覆盖门控：该日 SSE+SZSE 两所行齐全才算覆盖（重跑零开销）；
+                # --force 不覆盖此门控（INSERT OR REPLACE 本就幂等，重抓全史纯属
+                # 浪费）；单所失败留下的部分日不算已覆盖——下次回补预跑自动补齐
                 if conn.execute(
-                        "SELECT 1 FROM etf_snapshots WHERE trade_date=? LIMIT 1",
-                        (target,)).fetchone():
+                        "SELECT COUNT(DISTINCT exchange) c FROM etf_snapshots"
+                        " WHERE trade_date=?", (target,)).fetchone()["c"] == 2:
                     continue
                 collect_market_snapshot(conn, target, now_iso)
         failed = []
