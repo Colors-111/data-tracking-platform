@@ -8,7 +8,8 @@ from backend.app import db
 def test_init_db_creates_schema(conn):
     tables = {r["name"] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
-    assert {"sources", "instruments", "observations", "job_runs"} <= tables
+    assert {"sources", "instruments", "observations", "job_runs",
+            "etf_snapshots"} <= tables
 
 
 def test_wal_mode(conn):
@@ -16,8 +17,9 @@ def test_wal_mode(conn):
 
 
 def test_seed_loaded(conn):
-    # 8 原有源 - cu-inventory（并入铜组后删除独立源行）+ 4 商品组源 + sse50/zz1000 扩容
-    assert conn.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"] == 13
+    # 8 原有源 - cu-inventory（并入铜组后删除独立源行）+ 4 商品组源
+    # + sse50/zz1000 扩容 + v1.3 etf-watchlist（自选跟踪）
+    assert conn.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"] == 14
     assert conn.execute(
         "SELECT COUNT(*) c FROM sources WHERE id='cu-inventory'"
     ).fetchone()["c"] == 0   # 独立源行删除：执行器不再单独跑它
@@ -38,6 +40,22 @@ def test_seed_loaded(conn):
     assert conn.execute(
         "SELECT lag_days FROM sources WHERE id='hs300-etf'"
     ).fetchone()["lag_days"] == 1
+
+
+def test_watchlist_source_seeded(conn):
+    # v1.3 自选跟踪源：instruments 初始为空（POST /api/watchlist 注册时补写），
+    # 新分组 "自选跟踪" 经 group_name 驱动侧边栏自动出现
+    row = conn.execute(
+        "SELECT name, group_name, fetcher, unit, lag_days, enabled"
+        " FROM sources WHERE id='etf-watchlist'").fetchone()
+    assert row["name"] == "自选 ETF"
+    assert row["group_name"] == "自选跟踪"
+    assert row["fetcher"] == "local.snapshot"
+    assert row["unit"] == "亿份"
+    assert row["lag_days"] == 1 and row["enabled"] == 1
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM instruments WHERE source_id='etf-watchlist'"
+    ).fetchone()["c"] == 0
 
 
 def test_instruments_unit_column(conn):
@@ -105,7 +123,7 @@ def test_unit_migration_on_legacy_db(tmp_path):
     row = c.execute(
         "SELECT source_id, unit FROM instruments WHERE id='cu-inventory'").fetchone()
     assert (row["source_id"], row["unit"]) == ("copper", "吨")
-    assert c.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"] == 13
+    assert c.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"] == 14
     c.close()
 
 
@@ -128,4 +146,4 @@ def test_observation_fk_enforced(conn):
 
 def test_init_db_idempotent(conn):
     db.init_db(conn)
-    assert conn.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"] == 13
+    assert conn.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"] == 14

@@ -15,6 +15,8 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from .app.db import connect, init_db
 from .fetchers.base import build_fetcher
+from .fetchers._util import (CODE_CANDIDATES, SHARE_CANDIDATES, clean_name,
+                             col, norm_code)
 from .notify import send_summary
 from . import fetchers  # noqa: F401 触发注册
 
@@ -125,6 +127,62 @@ def backup_database(conn, keep: int = 30) -> str:
         old.unlink()
     return str(dest)
 
+# ---------- v1.3 全市场 ETF 份额快照（设计 §5.3） ----------
+
+_snapshot_retry = retry(stop=stop_after_attempt(3),
+                        wait=wait_exponential(min=2, max=30), reraise=True)
+
+@_snapshot_retry
+def _fetch_sse_snapshot(d8: str):
+    """上交所全市场 ETF 份额单日快照（与 etf_scale fetcher 同接口）。"""
+    import akshare as ak
+    return ak.fund_etf_scale_sse(d8)
+
+@_snapshot_retry
+def _fetch_szse_snapshot(d8: str):
+    """深交所全市场 ETF 份额单日区间（start_date/end_date 为实测签名；
+    近期间歇性 connection refused——由 collect_market_snapshot 逐所隔离）。"""
+    import akshare as ak
+    return ak.fund_scale_daily_szse(start_date=d8, end_date=d8, symbol="ETF")
+
+def _snapshot_branch(df, trade_date: str, exchange: str, now_iso: str) -> list[tuple]:
+    """两所快照 df → etf_snapshots 行元组（code/份额列按共享候选常量
+       fail-loud 定位；份额 份 → 亿份，两所接口同口径）。空 df 返回 []。"""
+    if df is None or df.empty:
+        return []
+    c_code = col(df, CODE_CANDIDATES, "代码")
+    c_share = col(df, SHARE_CANDIDATES, "份额")
+    return [(trade_date, norm_code(r[c_code]), clean_name(r.get("基金简称")),
+             exchange, float(r[c_share]) / 1e8, now_iso)
+            for _, r in df.iterrows()]
+
+def collect_market_snapshot(conn, target_date: str, now_iso: str) -> int:
+    """全市场 ETF 份额快照落 etf_snapshots（PK(trade_date, code) 幂等）。
+       逐所 try/except：任一所失败（含重试耗尽）只 log.warning 跳过——
+       快照采集独立于逐源 run_source，失败不写 job_runs、不影响退出码，
+       缺失部分由次日例行采集以 INSERT OR REPLACE 幂等补齐。
+       返回本次写入行数（两所全失败/全空 → 0，绝不抛出）。"""
+    d8 = target_date.replace("-", "")
+    written = 0
+    for exchange, fetch in (("SSE", _fetch_sse_snapshot),
+                            ("SZSE", _fetch_szse_snapshot)):
+        try:
+            rows = _snapshot_branch(fetch(d8), target_date, exchange, now_iso)
+        except Exception as e:
+            log.warning("全市场快照 %s 采集失败，跳过（其余所照常，次日补齐）: %s",
+                        exchange, e)
+            continue
+        if rows:
+            conn.executemany(
+                """INSERT OR REPLACE INTO etf_snapshots
+                     (trade_date, code, name, exchange, shares, fetched_at)
+                   VALUES (?,?,?,?,?,?)""", rows)
+            written += len(rows)
+    conn.commit()
+    log.info("全市场快照 %s 写入 %d 行", target_date, written)
+    return written
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--date", default=dt.date.today().isoformat())
@@ -156,6 +214,22 @@ def main(argv=None):
             log.error("区间内无交易日：%s ~ %s", args.d_from, args.d_to)
             return 1
         log.info("回补 %s ~ %s，共 %d 个交易日", args.d_from, args.d_to, len(dates))
+        # v1.3 快照历史预回补：全市场资金流与自选跟踪的历史都在 etf_snapshots，
+        # 逐源循环前按同 target 语义（前一交易日）补齐快照（一次回补即得全史）。
+        # --source 指定其他源时跳过（不触网）；--source etf-watchlist 时也在
+        # 门控内——该源补跑必须先有快照才有观测可产出（调度器逐源补跑自愈依赖）。
+        if not args.source or args.source == "etf-watchlist":
+            now_iso = dt.datetime.now().isoformat(timespec="seconds")
+            for d in dates:
+                target = previous_trade_date(d, 1)
+                # 按日覆盖门控：已有快照的日期跳过（重跑零开销）；--force 不
+                # 覆盖此门控（INSERT OR REPLACE 本就幂等，重抓全史纯属浪费）；
+                # 单所失败留下的部分日期不算未覆盖——次日例行采集幂等补齐
+                if conn.execute(
+                        "SELECT 1 FROM etf_snapshots WHERE trade_date=? LIMIT 1",
+                        (target,)).fetchone():
+                    continue
+                collect_market_snapshot(conn, target, now_iso)
         failed = []
         for s in sources:
             insts = conn.execute(
@@ -197,6 +271,13 @@ def main(argv=None):
         return 0
 
     results = []
+    if not args.source:
+        # v1.3 全市场快照（设计 §5.3）：必须在逐源循环【前】写入——自选源
+        # local.snapshot 从快照表读本次目标日（前一交易日）。若放循环后，
+        # 循环读到的永远是"上一次运行循环后写入的 T-2 快照"，目标日恒差
+        # 一天，etf-watchlist 将 perpetually empty（时间线推演见设计 §5.3）
+        collect_market_snapshot(conn, previous_trade_date(args.date, 1),
+                                dt.datetime.now().isoformat(timespec="seconds"))
     for s in sources:
         insts = conn.execute(
             "SELECT * FROM instruments WHERE source_id=? ORDER BY sort_order",

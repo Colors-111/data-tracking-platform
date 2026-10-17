@@ -44,6 +44,15 @@ CREATE TABLE IF NOT EXISTS job_runs (
   started_at TEXT,
   finished_at TEXT
 );
+CREATE TABLE IF NOT EXISTS etf_snapshots (
+  trade_date TEXT NOT NULL,
+  code       TEXT NOT NULL,
+  name       TEXT NOT NULL,
+  exchange   TEXT NOT NULL,           -- 'SSE' | 'SZSE'
+  shares     REAL,
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY (trade_date, code)
+);
 """
 
 

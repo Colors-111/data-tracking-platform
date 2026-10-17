@@ -93,3 +93,10 @@ INSERT OR IGNORE INTO instruments(id,source_id,code,metric,unit,name,sort_order)
  -- INSERT OR IGNORE 不更新已有行，重排 518880/518800/518660 之间需 UPDATE 存量
  -- （会引入一次性迁移语义），本轮不做——列表展示顺序 9→10 仅差一位，可接受
  ('au-gld-spdr','gold','SPDR-GLD','holding','吨','SPDR黄金ETF持仓(全球)',10);
+
+-- ============ v1.3 全市场 ETF 资金流（设计 §5.3） ============
+-- 自选跟踪源：instruments 初始为空，POST /api/watchlist 一键注册时补写；
+-- 注册时从 etf_snapshots 回填该 code 全部历史 observations（零外部调用）。
+-- fetcher 'local.snapshot' 读快照表产出未来日期观测（历史已在注册时回填）。
+INSERT OR IGNORE INTO sources(id,name,group_name,freq,fetcher,unit,movement_th,lag_days,enabled,sort_order) VALUES
+ ('etf-watchlist','自选 ETF','自选跟踪','daily','local.snapshot','亿份',1.0,1,1,30);

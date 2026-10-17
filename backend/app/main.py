@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .db import connect, init_db
-from .api import jobs, movements, series, sources
+from .api import flows, jobs, movements, series, sources
 
 
 @asynccontextmanager
@@ -19,7 +19,8 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="数据追踪平台", lifespan=lifespan)
-for r in (sources.router, series.router, movements.router, jobs.router):
+for r in (sources.router, series.router, movements.router, jobs.router,
+          flows.router):
     app.include_router(r)
 
 # frontend/dist 判断在模块导入时执行——容器内存在则挂载；本机无 dist 则跳过，API 测试不受影响
