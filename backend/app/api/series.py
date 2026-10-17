@@ -1,9 +1,30 @@
-from fastapi import APIRouter, Depends, Query
+import re
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..db import get_conn
 
 router = APIRouter()
-RANGE_DAYS = {"1m": 31, "3m": 92, "6m": 183, "1y": 366, "all": None}
+RANGE_DAYS = {"1m": 31, "3m": 92, "6m": 183, "1y": 366, "3y": 1096, "5y": 1827, "all": None}
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _check_custom_window(start, end):
+    """自定义起止日期校验（用户输入）：格式须 YYYY-MM-DD 且 start ≤ end，否则 400。
+    只做形状校验；通过校验的值由调用方绑参进 SQL（铁律：外部值一律绑参，不得 f-string 内插）。"""
+    parsed = []
+    for v in (start, end):
+        if v is None:
+            continue
+        if not _DATE_RE.match(v):
+            raise HTTPException(400, "bad date, expect YYYY-MM-DD")
+        try:
+            parsed.append(datetime.strptime(v, "%Y-%m-%d"))
+        except ValueError:   # 过正则但非真实日期（如 2026-13-45）：宁严勿漏
+            raise HTTPException(400, "bad date, expect YYYY-MM-DD")
+    if len(parsed) == 2 and parsed[0] > parsed[1]:
+        raise HTTPException(400, "start after end")
 
 
 def _resolve_ids(conn, ids: list[str]) -> list[str]:
@@ -20,7 +41,10 @@ def _resolve_ids(conn, ids: list[str]) -> list[str]:
 
 @router.get("/api/series")
 def series(instruments: str = Query(""), normalize: int = 0,
-           range: str = Query("6m"), conn=Depends(get_conn)):
+           range: str = Query("6m"),
+           start: str = Query(None), end: str = Query(None),
+           conn=Depends(get_conn)):
+    _check_custom_window(start, end)
     ids = _resolve_ids(conn, [i for i in instruments.split(",") if i])
     if not ids:
         return {"as_of_date": None, "series": []}
@@ -31,9 +55,22 @@ def series(instruments: str = Query(""), normalize: int = 0,
         ids).fetchone()["m"]
     if not as_of:
         return {"as_of_date": None, "series": []}
-    # 注意：as_of 源自上游外部数据（trade_date 的 MAX），必须绑参不得 f-string 拼接
-    where_days = f"AND trade_date >= date(?, '-{days} days')" if days else ""
-    params = [*ids, as_of] if days else ids
+    # 注意：as_of 源自上游外部数据（trade_date 的 MAX），必须绑参不得 f-string 拼接。
+    # 窗口语义与 source_detail 一致：给了 start/end 任一即覆盖 range 档位（start 优先）；
+    # start/end 为用户输入必须绑参；end 缺省 = as_of（查询天然 ≤ MAX(trade_date)，无需上界）
+    if start is not None or end is not None:
+        conds, wparams = [], []
+        if start is not None:
+            conds.append("trade_date >= ?")
+            wparams.append(start)
+        if end is not None:
+            conds.append("trade_date <= ?")
+            wparams.append(end)
+        where_days = "AND " + " AND ".join(conds)
+        params = [*ids, *wparams]
+    else:
+        where_days = f"AND trade_date >= date(?, '-{days} days')" if days else ""
+        params = [*ids, as_of] if days else ids
     if normalize:
         sql = f"""SELECT instrument_id, trade_date, value,
                          FIRST_VALUE(value) OVER (PARTITION BY instrument_id ORDER BY trade_date) base

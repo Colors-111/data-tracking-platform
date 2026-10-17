@@ -1,9 +1,30 @@
+import re
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..db import get_conn
 
 router = APIRouter()
-RANGE_DAYS = {"1m": 31, "3m": 92, "6m": 183, "1y": 366, "all": None}
+RANGE_DAYS = {"1m": 31, "3m": 92, "6m": 183, "1y": 366, "3y": 1096, "5y": 1827, "all": None}
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _check_custom_window(start, end):
+    """自定义起止日期校验（用户输入）：格式须 YYYY-MM-DD 且 start ≤ end，否则 400。
+    只做形状校验；通过校验的值由调用方绑参进 SQL（铁律：外部值一律绑参，不得 f-string 内插）。"""
+    parsed = []
+    for v in (start, end):
+        if v is None:
+            continue
+        if not _DATE_RE.match(v):
+            raise HTTPException(400, "bad date, expect YYYY-MM-DD")
+        try:
+            parsed.append(datetime.strptime(v, "%Y-%m-%d"))
+        except ValueError:   # 过正则但非真实日期（如 2026-13-45）：SQLite date() 会得 NULL，宁严勿漏
+            raise HTTPException(400, "bad date, expect YYYY-MM-DD")
+    if len(parsed) == 2 and parsed[0] > parsed[1]:
+        raise HTTPException(400, "start after end")
 
 
 @router.get("/api/sources")
@@ -35,7 +56,10 @@ def list_sources(conn=Depends(get_conn)):
 
 
 @router.get("/api/sources/{sid}")
-def source_detail(sid: str, range: str = Query("3m"), conn=Depends(get_conn)):
+def source_detail(sid: str, range: str = Query("3m"),
+                  start: str = Query(None), end: str = Query(None),
+                  conn=Depends(get_conn)):
+    _check_custom_window(start, end)
     src = conn.execute("SELECT * FROM sources WHERE id=?", (sid,)).fetchone()
     if not src:
         raise HTTPException(404, "source not found")
@@ -58,9 +82,20 @@ def source_detail(sid: str, range: str = Query("3m"), conn=Depends(get_conn)):
                 "as_of_date": None, "cards": [], "series": {},
                 "instrument_meta": instrument_meta}
     # as_of 源自库内 trade_date（上游外部数据），必须绑参——防上游构造词典序居大的注入串；
-    # days 来自 RANGE_DAYS 白名单 int，可内插
-    day_filter = f"AND o.trade_date >= date(?, '-{days} days')" if days else ""
-    params = (sid, as_of) if days else (sid,)
+    # days 来自 RANGE_DAYS 白名单 int，可内插。
+    # 窗口语义：给了 start/end 任一即覆盖 range 档位（range 与 start 同给 → start 优先）；
+    # start/end 为用户输入必须绑参；end 缺省 = as_of——查询天然只含 ≤ MAX(trade_date) 的行，无需上界
+    if start is not None or end is not None:
+        conds = []
+        if start is not None:
+            conds.append("o.trade_date >= ?")
+        if end is not None:
+            conds.append("o.trade_date <= ?")
+        day_filter = "AND " + " AND ".join(conds)
+        params = (sid, *[v for v in (start, end) if v is not None])
+    else:
+        day_filter = f"AND o.trade_date >= date(?, '-{days} days')" if days else ""
+        params = (sid, as_of) if days else (sid,)
     rows = conn.execute(
         f"""SELECT o.instrument_id, o.trade_date, o.value,
                    FIRST_VALUE(o.value) OVER w AS first_v,

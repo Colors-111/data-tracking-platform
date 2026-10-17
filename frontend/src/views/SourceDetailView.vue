@@ -6,12 +6,20 @@ import CardRow from "../components/CardRow.vue";
 import TrendChart from "../components/TrendChart.vue";
 import CompareChips from "../components/CompareChips.vue";
 import { groupSections, groupCharts, isCommodityMeta } from "../metricSections.js";
+import { RANGES, validateRange, rangeParams } from "../ranges.js";
 
 const props = defineProps({ id: String });
-const RANGES = [["1m", "1月"], ["3m", "3月"], ["6m", "6月"], ["1y", "1年"], ["all", "全部"]];
 const detail = ref(null);
 const error = ref("");
 const range = ref("3m");
+// 自定义起止窗口：默认近 5 年（start=5 年前、end=今天）；仅 range='custom' 时参与请求，
+// 点"应用"校验通过后才触发 load（时间条切换仍由 watch 驱动）
+const localIso = (d) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const fiveYearsAgo = () => { const d = new Date(); d.setFullYear(d.getFullYear() - 5); return localIso(d); };
+const customStart = ref(fiveYearsAgo());
+const customEnd = ref(localIso(new Date()));
+const customError = ref("");
 const compareIds = ref([]);      // 添加对比的数据源 id 列表
 const compareSeries = ref([]);   // /api/series 返回（含 own + compare）
 const compareError = ref("");    // 对比序列加载失败：局部提示，不覆盖卡片数据
@@ -26,7 +34,9 @@ async function load() {
   detail.value = null; // 切换时立即清空，防旧源数据闪现（Task 14 审查 backlog）
   compareSeries.value = [];
   try {
-    const d = await api.sourceDetail(props.id, range.value);
+    // custom 模式以 start/end 请求（range 不传）；普通档位按 range——窗口来源对图表透明
+    const p = rangeParams(range.value, customStart.value, customEnd.value);
+    const d = await api.sourceDetail(props.id, p.range, p.start, p.end);
     if (my === seq) {
       detail.value = d;
       await loadCompare();
@@ -47,7 +57,9 @@ async function loadCompare() {
   }
   try {
     const allIds = [...ownIds, ...compareIds.value];
-    const res = await api.series(allIds, { normalize: normalize.value, range: range.value });
+    // 对比序列与本源同一窗口（custom 模式下 start/end 同步下发）
+    const p = rangeParams(range.value, customStart.value, customEnd.value);
+    const res = await api.series(allIds, { normalize: normalize.value, range: p.range, start: p.start, end: p.end });
     if (my === cseq) compareSeries.value = res.series;
   } catch (e) {
     if (my === cseq) {
@@ -64,6 +76,13 @@ watch(() => props.id, () => {
   normalize.value = 0;
 });
 watch([compareIds, normalize], loadCompare);
+
+// 自定义窗口"应用"：前端校验（格式/顺序）通过才请求；错误就地提示、不动现有数据
+function applyCustom() {
+  const err = validateRange(customStart.value, customEnd.value);
+  customError.value = err ?? "";
+  if (!err) load();
+}
 
 // 对比源的 instrument_meta（iid→unit）：/api/series 不带单位，而商品对比源的
 // sources.unit='混合' 非真实量纲——逐对比源拉 sourceDetail 取逐 instrument 单位，
@@ -208,6 +227,14 @@ function onAdded(payload) {
     <div class="range-bar">
       <button v-for="[k, label] in RANGES" :key="k" :class="{ active: range === k }" @click="range = k">{{ label }}</button>
     </div>
+    <!-- 自定义起止：点击"自定义"即以当前起止（默认近 5 年）请求；调整后点"应用"重新拉取 -->
+    <div v-if="range === 'custom'" class="custom-bar">
+      <input type="date" v-model="customStart" aria-label="开始日期">
+      <span class="tilde">至</span>
+      <input type="date" v-model="customEnd" aria-label="结束日期">
+      <button class="apply-btn" @click="applyCustom">应用</button>
+      <span v-if="customError" class="custom-error">{{ customError }}</span>
+    </div>
 
     <!-- ETF 等全 share 源：单区旧布局（Task 14/17 契约不动） -->
     <template v-if="!isCommodity">
@@ -262,6 +289,12 @@ function onAdded(payload) {
 .range-bar { margin: 12px 0 4px; display:flex; gap:6px; }
 .range-bar button { border:1px solid #ddd; background:#fff; border-radius:4px; padding:4px 12px; cursor:pointer; font-size:12px; }
 .range-bar button.active { background:#f0f3f6; color:#c0392b; font-weight:700; border-color:#c0392b; }
+.custom-bar { display:flex; align-items:center; gap:6px; margin:6px 0 4px; font-size:12px; color:#666; }
+.custom-bar input[type="date"] { border:1px solid #ddd; border-radius:4px; padding:3px 6px; font-size:12px; }
+.custom-bar .tilde { color:#999; }
+.custom-bar .apply-btn { border:1px solid #c0392b; background:#fff; color:#c0392b; border-radius:4px; padding:3px 12px; cursor:pointer; font-size:12px; }
+.custom-bar .apply-btn:hover { background:#c0392b; color:#fff; }
+.custom-error { color:#c0392b; }
 .compare-bar { display:flex; gap:14px; align-items:center; margin:10px 0; }
 .norm-toggle { font-size:12px; color:#666; }
 .compare-error { font-size:12px; color:#c0392b; }

@@ -130,3 +130,37 @@ def test_window_filter_excludes_old_rows(client, conn):
     pts = body["series"]["510300"]
     assert len(pts) == 3
     assert [p[0] for p in pts] == ["2026-10-13", "2026-10-14", "2026-10-15"]
+
+
+def test_detail_range_3y_5y(client, conn):
+    # 造横跨 6 年的数据：as_of=2026-10-15；
+    # 5y 下界 = date(as_of,'-1827 days') = 2021-10-14，3y 下界 = date(as_of,'-1096 days') = 2023-10-15
+    for d, v in [("2021-06-01", 90), ("2022-01-01", 100),
+                 ("2023-06-01", 105), ("2024-01-01", 110), ("2026-10-15", 120)]:
+        conn.execute("INSERT INTO observations VALUES('510300','share',?,?,NULL,'t')", (d, v))
+    conn.commit()
+    r5 = client.get("/api/sources/hs300-etf?range=5y").json()
+    assert [p[0] for p in r5["series"]["510300"]] == \
+        ["2022-01-01", "2023-06-01", "2024-01-01", "2026-10-15"]   # 2021-06-01 在 5y 窗口外
+    r3 = client.get("/api/sources/hs300-etf?range=3y").json()
+    assert [p[0] for p in r3["series"]["510300"]] == ["2024-01-01", "2026-10-15"]
+
+
+def test_detail_custom_start_end(client, conn):
+    for d, v in [("2015-01-05", 100), ("2020-06-01", 110), ("2026-10-15", 120)]:
+        conn.execute("INSERT INTO observations VALUES('510300','share',?,?,NULL,'t')", (d, v))
+    conn.commit()
+    # 不带 range（默认 3m）+ start/end：自定义窗口覆盖 range 档位（start 优先语义）
+    r = client.get("/api/sources/hs300-etf?start=2020-01-01&end=2026-01-01").json()
+    assert [p[0] for p in r["series"]["510300"]] == ["2020-06-01"]
+    # start 单给：end 缺省 = as_of（不截尾）
+    r2 = client.get("/api/sources/hs300-etf?start=2020-01-01").json()
+    assert [p[0] for p in r2["series"]["510300"]] == ["2020-06-01", "2026-10-15"]
+    # end 单给：不设下界（全历史截到 end）
+    r3 = client.get("/api/sources/hs300-etf?end=2026-01-01").json()
+    assert [p[0] for p in r3["series"]["510300"]] == ["2015-01-05", "2020-06-01"]
+    # 非法日期格式 → 400
+    assert client.get("/api/sources/hs300-etf?start=banana").status_code == 400
+    assert client.get("/api/sources/hs300-etf?end=nope").status_code == 400
+    # start 晚于 end → 400
+    assert client.get("/api/sources/hs300-etf?start=2026-01-01&end=2020-01-01").status_code == 400
