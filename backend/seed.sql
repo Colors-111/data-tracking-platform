@@ -100,3 +100,22 @@ INSERT OR IGNORE INTO instruments(id,source_id,code,metric,unit,name,sort_order)
 -- fetcher 'local.snapshot' 读快照表产出未来日期观测（历史已在注册时回填）。
 INSERT OR IGNORE INTO sources(id,name,group_name,freq,fetcher,unit,movement_th,lag_days,enabled,sort_order) VALUES
  ('etf-watchlist','自选 ETF','自选跟踪','daily','local.snapshot','亿份',1.0,1,1,30);
+
+-- ============ v1.3.x 大 ETF 补齐（90% 原则） ============
+-- 纯指数类别补齐大 ETF：中证500 +2（510500/510580）、中证1000 +1（159633）、
+-- A500 +8（含 3 只由 etf_snapshots 份额排序精算选出：560610/159353/560530，
+-- 补足后 tracked/类别合计 ≥88%）。历史观测由 migrations/2026-10-17-etf-category-backfill.sql
+-- 从 etf_snapshots 幂等回填（零外部调用）；unit 为 NULL → API/前端回退源单位（亿份）。
+-- 家族类（创业板/红利）确认不补品种：成员庞杂（84/82 只）且分散，跟踪合计无代表性。
+INSERT OR IGNORE INTO instruments(id,source_id,code,metric,name,sort_order) VALUES
+ ('510500','csi500-etf','510500','share','500ETF南方',4),
+ ('510580','csi500-etf','510580','share','ZZ500ETF',5),
+ ('159633','zz1000-etf','159633','share','中证1000ETF易方达',4),
+ ('563360','a500-etf','563360','share','A500基金',4),
+ ('512050','a500-etf','512050','share','A500E',5),
+ ('563800','a500-etf','563800','share','A500龙头',6),
+ ('159351','a500-etf','159351','share','A500ETF嘉实',7),
+ ('563220','a500-etf','563220','share','A500富国',8),
+ ('560610','a500-etf','560610','share','A500指数',9),
+ ('159353','a500-etf','159353','share','中证A500ETF景顺',10),
+ ('560530','a500-etf','560530','share','A500ETF',11);

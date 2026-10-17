@@ -84,8 +84,8 @@ def test_dispatch_short_circuits(conn, monkeypatch):
 
 def test_szse_failure_isolated_sse_still_produces(mixed_env, monkeypatch, caplog):
     # v1.2.1 契约变更（源级原子 → 分支级失败隔离）：深交所断连不再拖死
-    # 上交所——混合源（csi500：159922/512500/159820）上交所品种照常产出，
-    # 告警含分支名与错误摘要；两所全部失败才抛（见下）
+    # 上交所——混合源（csi500：159922/512500/159820 + v1.3.x 补齐 510500/510580）
+    # 上交所品种照常产出，告警含分支名与错误摘要；两所全部失败才抛（见下）
     import backend.fetchers.akshare_etf_scale as mod
 
     def boom(start_date, end_date, symbol=None):
@@ -94,7 +94,7 @@ def test_szse_failure_isolated_sse_still_produces(mixed_env, monkeypatch, caplog
     monkeypatch.setattr(mod.ak, "fund_scale_daily_szse", boom)
     obs = mixed_env.fetch("2026-10-14")
     got = {o.instrument_id: o for o in obs}
-    assert set(got) == {"512500"}
+    assert set(got) == {"512500", "510500", "510580"}
     assert got["512500"].metric == "share"
     assert "SZSE" in caplog.text and "szse down" in caplog.text
 

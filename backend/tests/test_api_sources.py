@@ -176,3 +176,94 @@ def test_detail_custom_start_end(client, conn):
     assert client.get("/api/sources/hs300-etf?end=nope").status_code == 400
     # start 晚于 end → 400
     assert client.get("/api/sources/hs300-etf?start=2026-01-01&end=2020-01-01").status_code == 400
+
+
+# ---------- v1.3.x ETF 类别总量曲线（全市场口径）+ 覆盖率 ----------
+
+def _seed_category_fixture(conn):
+    """hs300-etf：2 只跟踪（510300/510310）+ 快照含 1 只未跟踪同类别品种
+    （510999）+ 1 只不同类别品种（159915，不匹配 hs300 正则）各两天。"""
+    for iid, d, v in [("510300", "2026-10-14", 100), ("510300", "2026-10-15", 103),
+                      ("510310", "2026-10-14", 50), ("510310", "2026-10-15", 52)]:
+        conn.execute("INSERT INTO observations VALUES(?, 'share', ?, ?, NULL, 't')", (iid, d, v))
+    conn.executemany("INSERT INTO etf_snapshots VALUES(?,?,?,?,?,?)", [
+        ("2026-10-14", "510300", "沪深300ETF华泰柏瑞", "SSE", 100.0, "t"),
+        ("2026-10-14", "510310", "沪深300ETF易方达", "SSE", 50.0, "t"),
+        ("2026-10-14", "510999", "沪深300ETF国联", "SSE", 30.0, "t"),
+        ("2026-10-14", "159915", "创业板ETF易方达", "SZSE", 500.0, "t"),
+        ("2026-10-15", "510300", "沪深300ETF华泰柏瑞", "SSE", 103.0, "t"),
+        ("2026-10-15", "510310", "沪深300ETF易方达", "SSE", 52.0, "t"),
+        ("2026-10-15", "510999", "沪深300ETF国联", "SSE", 45.0, "t"),
+    ])
+    conn.commit()
+
+
+def test_source_detail_category_total(client, conn):
+    # category_total=全市场口径（etf_snapshots 按类别名正则聚合，含未跟踪品种、
+    # 排除非同类品种）；tracked_total=本源 instruments 按日合计；coverage=最新日比率
+    _seed_category_fixture(conn)
+    body = client.get("/api/sources/hs300-etf?range=1m").json()
+    assert body["category_total"] == [["2026-10-14", 180.0], ["2026-10-15", 200.0]]
+    assert body["tracked_total"] == [["2026-10-14", 150.0], ["2026-10-15", 155.0]]
+    assert body["coverage"] == 77.5
+
+
+def test_source_detail_category_window_filter(client, conn):
+    # 窗口外快照日不进 category_total（窗口语义与主序列一致：range=1m 相对 as_of）
+    _seed_category_fixture(conn)
+    conn.execute("INSERT INTO etf_snapshots VALUES"
+                 "('2020-01-01','510300','沪深300ETF华泰柏瑞','SSE',999.0,'t')")
+    conn.commit()
+    body = client.get("/api/sources/hs300-etf?range=1m").json()
+    assert [d for d, _ in body["category_total"]] == ["2026-10-14", "2026-10-15"]
+    # 自定义窗口同语义：截到 end 后 category_total 只含窗口内日期
+    body2 = client.get(
+        "/api/sources/hs300-etf?start=2026-10-01&end=2026-10-14").json()
+    assert body2["category_total"] == [["2026-10-14", 180.0]]
+    assert body2["tracked_total"] == [["2026-10-14", 150.0]]
+
+
+def test_commodity_source_has_no_category_fields(client, conn):
+    # 商品源（group=大宗商品）不返回类别三字段
+    conn.execute("INSERT INTO observations VALUES"
+                 "('cu-shfe-price','price','2026-10-15',70000,NULL,'t')")
+    conn.commit()
+    body = client.get("/api/sources/copper?range=1m").json()
+    assert "category_total" not in body
+    assert "tracked_total" not in body
+    assert "coverage" not in body
+
+
+def test_etf_source_without_pattern_no_category_fields(client, conn):
+    # 指数 ETF 组但无 CAT_PATTERNS 条目（无全市场类别口径）→ 不返回三字段
+    conn.execute("INSERT INTO sources VALUES"
+                 "('x-etf','X ETF','指数 ETF','daily','akshare.etf_scale',"
+                 "'亿份',1.0,1,1,99)")
+    conn.execute("INSERT INTO instruments(id,source_id,code,metric,name,sort_order)"
+                 " VALUES('x1','x-etf','x1','share','XETF',1)")
+    conn.execute("INSERT INTO observations VALUES('x1','share','2026-10-15',10,NULL,'t')")
+    conn.commit()
+    body = client.get("/api/sources/x-etf?range=1m").json()
+    assert "category_total" not in body
+    assert "tracked_total" not in body
+    assert "coverage" not in body
+
+
+def test_category_coverage_no_tracked_data(client, conn):
+    # 类别有快照但最新类别日本源无观测 → coverage 0.0（诚实显示，不虚高）
+    conn.execute("INSERT INTO etf_snapshots VALUES"
+                 "('2026-10-15','510999','沪深300ETF国联','SSE',60.0,'t')")
+    conn.execute("INSERT INTO observations VALUES"
+                 "('510300','share','2026-10-14',100,NULL,'t')")
+    conn.commit()
+    body = client.get("/api/sources/hs300-etf?range=1m").json()
+    assert body["category_total"] == [["2026-10-15", 60.0]]
+    assert body["tracked_total"] == [["2026-10-14", 100.0]]
+    assert body["coverage"] == 0.0
+
+
+def test_empty_source_has_no_category_fields(client):
+    # 早退分支（无任何观测）：不带三字段（coal-price 本就非 ETF 组）
+    body = client.get("/api/sources/coal-price").json()
+    assert "category_total" not in body
+    assert "coverage" not in body

@@ -109,10 +109,20 @@ const useUnified = computed(() =>
 const chartSeries = computed(() => {
   if (useUnified.value)
     return compareSeries.value.map(s => ({ name: s.name, data: s.points }));
-  // 原值模式回退到 detail 自带序列
-  return Object.entries(detail.value?.series ?? {})
-    .map(([iid, pts]) => ({ name: nameOf(iid), data: pts }))
-    .filter(s => s.data.length); // 未回补的空 instrument 不进图例
+  // v1.3.x 类别总量两线置图例最前：全类总额（虚线，全市场口径）+ 已跟踪合计（点线），
+  // 差值即未跟踪部分。仅原值模式叠加——统一序列（对比/归一化）经 /api/series 算百分比，
+  // 特殊线未参与归一化，量纲不同不可同图；category/tracked 任一为空不渲染该线
+  const special = [];
+  if (detail.value?.category_total?.length)
+    special.push({ name: "全类总额", data: detail.value.category_total, lineType: "dashed" });
+  if (detail.value?.tracked_total?.length)
+    special.push({ name: "已跟踪合计", data: detail.value.tracked_total, lineType: "dotted" });
+  return [
+    ...special,
+    ...Object.entries(detail.value?.series ?? {})
+      .map(([iid, pts]) => ({ name: nameOf(iid), data: pts }))
+      .filter(s => s.data.length), // 未回补的空 instrument 不进图例
+  ];
 });
 
 // v1.2 商品组源分区：share-only 源（ETF）走旧单区布局，商品源按指标分区渲染
@@ -221,6 +231,9 @@ function onAdded(payload) {
     <div class="banner">
       {{ detail.name }}
       <span class="badge">{{ detail.cards.length }} 项 · 数据截至 {{ detail.as_of_date ?? "累积中" }}</span>
+      <!-- v1.3.x 覆盖率徽章（纯展示）：最新类别日已跟踪/全类合计，<90% 黄、≥90% 绿 -->
+      <span v-if="detail.coverage != null" class="coverage-badge"
+            :class="detail.coverage >= 90 ? 'ok' : 'warn'">覆盖该类 {{ detail.coverage }}%</span>
       <JobStatus />
     </div>
 
@@ -303,4 +316,8 @@ function onAdded(payload) {
 .section-title { font-size:14px; color:#444; margin:12px 0 0; padding-left:8px; border-left:3px solid #c0392b; }
 .section-note { margin-left:8px; font-size:11px; color:#999; font-weight:400; }
 .chart-title { font-size:13px; color:#666; margin:0 0 2px; font-weight:600; }
+/* v1.3.x 覆盖率徽章：<90% 黄（提醒可继续补齐大 ETF）、≥90% 绿（达标） */
+.coverage-badge { font-size:11px; padding:1px 8px; border-radius:10px; margin-left:6px; }
+.coverage-badge.ok { background:#e8f6ee; color:#1e8449; border:1px solid #a9dfbf; }
+.coverage-badge.warn { background:#fdf6e3; color:#b7950b; border:1px solid #f7dc6f; }
 </style>

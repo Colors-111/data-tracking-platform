@@ -1,4 +1,5 @@
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -26,9 +27,6 @@ def test_seed_loaded(conn):
     assert conn.execute(
         "SELECT COUNT(*) c FROM instruments WHERE source_id='hs300-etf'"
     ).fetchone()["c"] == 5
-    assert conn.execute(
-        "SELECT COUNT(*) c FROM instruments WHERE source_id='csi500-etf'"
-    ).fetchone()["c"] == 3
     # 商品组源抽查：铜 7（cu-cftc 移除——CFTC 接口无铜品种列，后续直连 COT 立项）、
     # 黄金 10（含 au-london-price 伦敦金现、au-gld-spdr SPDR 黄金 ETF 持仓）
     assert conn.execute(
@@ -37,6 +35,16 @@ def test_seed_loaded(conn):
     assert conn.execute(
         "SELECT COUNT(*) c FROM instruments WHERE source_id='gold'"
     ).fetchone()["c"] == 10
+    # v1.3.x 大 ETF 补齐（90% 原则）：中证500 +2、中证1000 +1、A500 +8（SQL 精算选足）
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM instruments WHERE source_id='csi500-etf'"
+    ).fetchone()["c"] == 5
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM instruments WHERE source_id='zz1000-etf'"
+    ).fetchone()["c"] == 4
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM instruments WHERE source_id='a500-etf'"
+    ).fetchone()["c"] == 11
     assert conn.execute(
         "SELECT lag_days FROM sources WHERE id='hs300-etf'"
     ).fetchone()["lag_days"] == 1
@@ -147,3 +155,39 @@ def test_observation_fk_enforced(conn):
 def test_init_db_idempotent(conn):
     db.init_db(conn)
     assert conn.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"] == 14
+
+
+def test_seed_backfill_from_snapshots(conn):
+    # v1.3.x 大 ETF 补齐：历史观测从 etf_snapshots 幂等回填（零外部调用）。
+    # 新补品种（无任何观测）取全快照史；已跟踪品种存量观测不被覆盖（DO NOTHING）；
+    # metric!='share' 的品种（如 gold 组 holding）不被回填。
+    conn.executemany("INSERT INTO etf_snapshots VALUES(?,?,?,?,?,?)", [
+        ("2026-10-14", "510500", "500ETF南方", "SSE", 55.0, "t"),
+        ("2026-10-15", "510500", "500ETF南方", "SSE", 56.5, "t"),
+        ("2026-10-15", "159922", "中证500ETF嘉实", "SZSE", 88.0, "t"),
+        ("2026-10-15", "518880", "黄金ETF华安", "SSE", 20.0, "t"),   # gold 组 metric=holding
+    ])
+    # 已跟踪品种既有观测（日常采集已落库）：值与快照不同，用于验证不被覆盖
+    conn.execute(
+        "INSERT INTO observations VALUES('159922','share','2026-10-15',100.0,NULL,'daily')")
+    conn.commit()
+    sql = (Path(__file__).resolve().parents[1] / "migrations"
+           / "2026-10-17-etf-category-backfill.sql").read_text(encoding="utf-8")
+    conn.executescript(sql)
+    rows = conn.execute(
+        "SELECT trade_date, value FROM observations"
+        " WHERE instrument_id='510500' ORDER BY trade_date").fetchall()
+    assert [(r["trade_date"], r["value"]) for r in rows] == \
+        [("2026-10-14", 55.0), ("2026-10-15", 56.5)]
+    # 存量观测保留（值仍 100.0 而非快照 88.0）
+    kept = conn.execute(
+        "SELECT value FROM observations WHERE instrument_id='159922'").fetchone()
+    assert kept["value"] == 100.0
+    # holding 品种不回填
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM observations WHERE instrument_id='518880'"
+    ).fetchone()["c"] == 0
+    # 幂等：重跑行数不变
+    before = conn.execute("SELECT COUNT(*) c FROM observations").fetchone()["c"]
+    conn.executescript(sql)
+    assert conn.execute("SELECT COUNT(*) c FROM observations").fetchone()["c"] == before

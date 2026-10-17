@@ -32,6 +32,8 @@ const option = computed(() => ({
   series: props.series.map(s => ({
     name: s.name, type: "line", showSymbol: false,
     connectNulls: true, data: s.data,
+    // 可选线型（v1.3.x 类别总量线：全类总额虚线、已跟踪合计点线，区别于成分实线）
+    ...(s.lineType ? { lineStyle: { type: s.lineType } } : {}),
   })),
 }));
 </script>

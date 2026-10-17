@@ -6,6 +6,21 @@ from ..validate import check_custom_window
 router = APIRouter()
 RANGE_DAYS = {"1m": 31, "3m": 92, "6m": 183, "1y": 366, "3y": 1096, "5y": 1827, "all": None}
 
+# v1.3.x ETF 类别总量曲线：源 id → 该类别在全市场快照（etf_snapshots.name）中的
+# 成员名正则。口径为"全类"（含未跟踪品种），定义上 100% 覆盖——差值即未跟踪部分。
+# 注意：负向定宽 lookbehind 在前置字符不足时恒真（如 sse50 模式对"创业板50ETF"
+# 截断名的排除是 no-op）——已知口径近似，精算偏差记录于交付报告。
+CAT_PATTERNS = {
+    'hs300-etf':  r'沪深300|300ETF',
+    'csi500-etf': r'(?<!A)中证500|(?<!A)500ETF',
+    'star50-etf': r'科创50|科创板50',
+    'chinext-etf': r'创业板',
+    'dividend-etf': r'红利|股息',
+    'a500-etf': r'A500',
+    'sse50-etf': r'上证50|(?<!创业板50)(?<!双创50)50ETF',
+    'zz1000-etf': r'中证1000|1000ETF|1000基金',
+}
+
 
 @router.get("/api/sources")
 def list_sources(conn=Depends(get_conn)):
@@ -113,6 +128,46 @@ def source_detail(sid: str, range: str = Query("3m"),
                 card["range_change"] = round(last["value"] - last["first_v"], 4)
                 card["range_pct"] = round((last["value"] / last["first_v"] - 1) * 100, 2)
             cards.append(card)
-    return {"id": sid, "name": src["name"], "unit": src["unit"],
+    resp = {"id": sid, "name": src["name"], "unit": src["unit"],
             "as_of_date": as_of, "cards": cards, "series": series,
             "instrument_meta": instrument_meta}
+    # v1.3.x 类别总量曲线（仅指数 ETF 组、非混合单位、有类别口径的源）：
+    #   category_total——全市场口径，etf_snapshots 按类别名正则聚合按日求和（窗口同主查询）；
+    #   tracked_total——本源 instruments 观测按日合计（窗口同主查询）；
+    #   coverage——最新类别日 tracked/category*100（一位小数）；类别无数据 → None，
+    #   该日本源无观测 → 0.0（诚实显示 0 而非虚高）。
+    # 正则经 REGEXP(?, name) 在库内过滤聚合（连接级 create_function，见 db.connect），
+    # 避免把整表快照拉进 Python（all 窗口下 150 万行）。
+    pattern = (CAT_PATTERNS.get(sid)
+               if src["group_name"] == "指数 ETF" and src["unit"] != "混合" else None)
+    if pattern:
+        tracked: dict[str, float] = {}
+        for r in rows:
+            if r["value"] is not None:
+                tracked[r["trade_date"]] = tracked.get(r["trade_date"], 0.0) + r["value"]
+        resp["tracked_total"] = sorted(tracked.items())
+        if start is not None or end is not None:
+            cat_conds = []
+            cat_params = [pattern]
+            if start is not None:
+                cat_conds.append("trade_date >= ?")
+                cat_params.append(start)
+            if end is not None:
+                cat_conds.append("trade_date <= ?")
+                cat_params.append(end)
+            cat_filter = " AND " + " AND ".join(cat_conds)
+        else:
+            cat_filter = (" AND trade_date >= date(?, '-%d days')" % days) if days else ""
+            cat_params = [pattern, as_of] if days else [pattern]
+        cat_rows = conn.execute(
+            f"""SELECT trade_date, SUM(shares) s FROM etf_snapshots
+                 WHERE REGEXP(?, name){cat_filter}
+                 GROUP BY trade_date ORDER BY trade_date""", cat_params).fetchall()
+        category_total = [[r["trade_date"], r["s"]] for r in cat_rows]
+        resp["category_total"] = category_total
+        coverage = None
+        if category_total and category_total[-1][1]:
+            last_date, cat_v = category_total[-1]
+            coverage = round(tracked.get(last_date, 0.0) / cat_v * 100, 1)
+        resp["coverage"] = coverage
+    return resp

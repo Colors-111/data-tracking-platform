@@ -1,5 +1,6 @@
 """SQLite 连接与 schema 初始化。WAL 模式：并发读不阻塞每日唯一写者。"""
 import os
+import re
 import sqlite3
 from pathlib import Path
 
@@ -71,6 +72,12 @@ def connect(path=None) -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA foreign_keys=ON")
+    # REGEXP（v1.3.x 类别总量聚合用）：SQLite 默认无该函数，注册 Python re.search。
+    # 用法 `name REGEXP ?`（左侧列名、右侧绑参 pattern），值 None 时恒 False
+    conn.create_function(
+        "REGEXP", 2,
+        lambda pat, val: bool(val) and re.search(pat, val) is not None,
+        deterministic=True)
     return conn
 
 
