@@ -14,14 +14,14 @@ RANGE_DAYS = {"1m": 31, "3m": 92, "6m": 183, "1y": 366, "3y": 1096, "5y": 1827, 
 #    定宽 lookbehind（后者对截断名是 no-op）
 #  - 全类通用：排除增强/联接
 CAT_PATTERNS = {
-    'hs300-etf':  r'沪深300|300ETF',
-    'csi500-etf': r'中证500|500ETF',
-    'star50-etf': r'科创50|科创板50',
-    'chinext-etf': r'创业板',
-    'dividend-etf': r'红利|股息',
-    'a500-etf': r'A500',
-    'sse50-etf': r'上证50|50ETF',
-    'zz1000-etf': r'中证1000|1000ETF|1000基金',
+    'hs300-etf':  r'沪深300.*|300ETF$',
+    'csi500-etf': r'中证500.*|500ETF',
+    'star50-etf': r'科创50.*|科创板50.*',
+    'chinext-etf': r'创业板.*',
+    'dividend-etf': r'红利.*|股息.*',
+    'a500-etf': r'A500.*',
+    'sse50-etf': r'上证50.*|50ETF$|SZ50ETF$',   # 锚定：50ETF 需全名精确（A50/创50/电池50 等主题品种不算）
+    'zz1000-etf': r'中证1000.*|1000ETF.*|1000基金.*',
 }
 # 类别排除词（name 含任一即剔除）：与 CAT_PATTERNS 配对使用
 CAT_EXCLUDES = {
@@ -31,7 +31,7 @@ CAT_EXCLUDES = {
     'chinext-etf': r'增强|联接',
     'dividend-etf': r'增强|联接',
     'a500-etf': r'增强|联接',
-    'sse50-etf': r'增强|联接|创业板50|双创50|科创创业50|中证1000',
+    'sse50-etf': r'增强|联接|创业板50|双创50|科创创业50|中证1000|AH',
     'zz1000-etf': r'增强|联接',
 }
 
@@ -156,10 +156,11 @@ def source_detail(sid: str, range: str = Query("3m"),
                if src["group_name"] == "指数 ETF" and src["unit"] != "混合" else None)
     if pattern:
         # 排除词编入负向先行（REGEXP 注册的是 re.search，完整 Python 正则语义可用）：
-        # "任意位置不含排除词" 且 "匹配类别词"
+        # "任意位置不含排除词" 且 "整体匹配类别模式"——CAT_PATTERNS 分支自带锚定
+        # （.* 前缀/后缀由各分支自负责，否则 XX50ETF 主题品种会借尾部匹配混入）
         exclude = CAT_EXCLUDES.get(sid, "")
-        pattern = (f"^(?!.*(?:{exclude})).*(?:{pattern})" if exclude
-                   else f"^(?:{pattern})")
+        pattern = (f"^(?!.*(?:{exclude}))(?:{pattern})$" if exclude
+                   else f"^(?:{pattern})$")
         tracked: dict[str, float] = {}
         for r in rows:
             if r["value"] is not None:

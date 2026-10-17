@@ -292,3 +292,23 @@ def test_category_excludes_wrong_index_funds(client, conn):
     cat50 = dict(body50["category_total"])
     assert cat50[day] == pytest.approx(89.0)  # 创业板50 的 178 被排除
     assert body50["coverage"] == pytest.approx(100.0, abs=0.1)
+
+def test_sse50_pattern_excludes_thematic_50etf(client, conn):
+    """上证50 类别口径：A50/创50/电池50 等 XX50ETF 主题品种不算（锚定匹配实测修正）"""
+    day = "2026-10-15"
+    rows = [
+        ("510050", "50ETF", 89.0),                 # 真上证50（全名精确）
+        ("563360", "电池50ETF", 300.0),            # 主题品种，须排除
+        ("159949", "创业板50ETF华安", 178.0),        # 须排除
+        ("510800", "上证50ETF", 1.8),              # 前缀匹配 ✓
+    ]
+    for code, name, sh in rows:
+        conn.execute("INSERT INTO etf_snapshots VALUES(?,?,?,?,?,datetime('now'))",
+                     (day, code, name, "SSE", sh))
+    for d, v in [(day, 89.0)]:
+        conn.execute("INSERT INTO observations VALUES('510050','share',?,?,NULL,'t')", (d, v))
+    conn.commit()
+    body = client.get("/api/sources/sse50-etf?range=1m").json()
+    cat = dict(body["category_total"])
+    assert cat[day] == pytest.approx(90.8)   # 89 + 1.8；电池50/创业板50 被排除
+    assert body["coverage"] == pytest.approx(98.0, abs=0.1)
