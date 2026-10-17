@@ -100,3 +100,18 @@ describe("METRIC_SECTIONS 定义", () => {
     expect(METRIC_SECTIONS.every(s => s.label)).toBe(true);
   });
 });
+
+describe("分区数据源说明（stale 源如实标注）", () => {
+  it("inventory/positioning 分区携带 note 字段，其余分区不带", () => {
+    const byKey = Object.fromEntries(METRIC_SECTIONS.map(s => [s.key, s]));
+    expect(byKey.inventory.note).toContain("2026-07");
+    expect(byKey.positioning.note).toContain("2021-09");
+    expect(byKey.price.note).toBeUndefined();
+    expect(byKey.reserve.note).toBeUndefined();
+  });
+  it("groupSections 输出透传 note", () => {
+    const meta = { "cu-inventory": { metric: "inventory" }, "510300": { metric: "share" } };
+    const secs = groupSections(meta);
+    expect(secs.find(s => s.key === "inventory").note).toContain("LME");
+  });
+});

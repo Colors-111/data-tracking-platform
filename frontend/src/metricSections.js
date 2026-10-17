@@ -5,9 +5,9 @@
 export const METRIC_SECTIONS = [
   { key: "price", label: "价格" },       // 期货/现货/SGE/伦敦金 同区；区内按计价单位分图（元/克 ≠ 美元/盎司）
   { key: "holding", label: "ETF 持仓" }, // 含场内 ETF 份额与 SPDR 全球金 ETF 吨持仓（holding/吨）
-  { key: "inventory", label: "库存" },
+  { key: "inventory", label: "库存", note: "LME 库存源停更于 2026-07；SHFE 库存源仅保留近 60 个交易日（每日采集中）" },
   { key: "warehouse", label: "仓单" },
-  { key: "positioning", label: "资金·持仓" },
+  { key: "positioning", label: "资金·持仓", note: "LME 净持仓源停更于 2021-09（历史数据仍可查）" },
   { key: "reserve", label: "储备" },
 ];
 

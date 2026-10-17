@@ -243,7 +243,7 @@ function onAdded(payload) {
       </div>
 
       <section v-for="sec in sectionCharts" :key="sec.key" class="metric-section">
-        <h3 class="section-title">{{ sec.label }}</h3>
+        <h3 class="section-title">{{ sec.label }}<span v-if="sec.note" class="section-note">{{ sec.note }}</span></h3>
         <CardRow v-if="cardsOf(sec).length" :cards="cardsOf(sec)" :unit="detail.unit" use-card-unit />
         <template v-if="sec.charts.length">
           <div class="card" v-for="ch in sec.charts" :key="`${sec.key}:${ch.key}`">
@@ -268,5 +268,6 @@ function onAdded(payload) {
 .empty { color:#999; text-align:center; padding:40px; }
 .metric-section { margin-top:6px; }
 .section-title { font-size:14px; color:#444; margin:12px 0 0; padding-left:8px; border-left:3px solid #c0392b; }
+.section-note { margin-left:8px; font-size:11px; color:#999; font-weight:400; }
 .chart-title { font-size:13px; color:#666; margin:0 0 2px; font-weight:600; }
 </style>
