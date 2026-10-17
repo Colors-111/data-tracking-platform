@@ -1,30 +1,10 @@
-import re
-from datetime import datetime
-
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 
 from ..db import get_conn
+from ..validate import check_custom_window
 
 router = APIRouter()
 RANGE_DAYS = {"1m": 31, "3m": 92, "6m": 183, "1y": 366, "3y": 1096, "5y": 1827, "all": None}
-_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-
-
-def _check_custom_window(start, end):
-    """自定义起止日期校验（用户输入）：格式须 YYYY-MM-DD 且 start ≤ end，否则 400。
-    只做形状校验；通过校验的值由调用方绑参进 SQL（铁律：外部值一律绑参，不得 f-string 内插）。"""
-    parsed = []
-    for v in (start, end):
-        if v is None:
-            continue
-        if not _DATE_RE.match(v):
-            raise HTTPException(400, "bad date, expect YYYY-MM-DD")
-        try:
-            parsed.append(datetime.strptime(v, "%Y-%m-%d"))
-        except ValueError:   # 过正则但非真实日期（如 2026-13-45）：宁严勿漏
-            raise HTTPException(400, "bad date, expect YYYY-MM-DD")
-    if len(parsed) == 2 and parsed[0] > parsed[1]:
-        raise HTTPException(400, "start after end")
 
 
 def _resolve_ids(conn, ids: list[str]) -> list[str]:
@@ -44,7 +24,7 @@ def series(instruments: str = Query(""), normalize: int = 0,
            range: str = Query("6m"),
            start: str = Query(None), end: str = Query(None),
            conn=Depends(get_conn)):
-    _check_custom_window(start, end)
+    check_custom_window(start, end)
     ids = _resolve_ids(conn, [i for i in instruments.split(",") if i])
     if not ids:
         return {"as_of_date": None, "series": []}

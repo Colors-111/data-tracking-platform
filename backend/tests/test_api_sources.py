@@ -107,6 +107,18 @@ def test_bad_range_400(client):
     assert client.get("/api/sources/hs300-etf?range=2m").status_code == 400
 
 
+def test_custom_window_overrides_bad_range(client, conn):
+    # 口径与 /api/series 统一：给了自定义起止时窗口完全由 start/end 决定，
+    # range 档位被忽略、不再做白名单校验（range=banana + start → 200）
+    conn.execute("INSERT INTO observations VALUES('510300','share','2026-10-15',103,NULL,'t')")
+    conn.commit()
+    r = client.get("/api/sources/hs300-etf?range=banana&start=2026-01-01&end=2026-12-31")
+    assert r.status_code == 200
+    assert [p[0] for p in r.json()["series"]["510300"]] == ["2026-10-15"]
+    # 无自定义窗口时坏 range 仍 400（既有契约不动）
+    assert client.get("/api/sources/hs300-etf?range=banana").status_code == 400
+
+
 def test_empty_source_returns_null_shape(client):
     # coal-price 有源有 instrument 但无 observation
     r = client.get("/api/sources/coal-price")
