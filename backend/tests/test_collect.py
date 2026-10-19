@@ -259,3 +259,62 @@ def test_backfill_force_refetches_for_new_instruments(conn, fake_source, monkeyp
     assert C.main(argv + ["--force"]) == 0   # 幂等：再 force 一遍
     assert conn.execute(
         "SELECT COUNT(*) c FROM observations").fetchone()["c"] == 2   # 不重不漏
+
+def test_run_source_same_day_target(conn, fake_source):
+    # 16:40 档抓当日：目标日 = run_date 本身（忽略 lag）；run_date 非交易日取前一交易日。
+    # 顺带覆盖新源前一交易日无数据的情形（基线 0 行不判完整性，放行以免永远无法起步）
+    seen = []
+
+    @register("fake.sameday")
+    class SD:
+        source_id = "fake"; lag_days = 1
+        def __init__(self, source, instruments): pass
+        def fetch(self, trade_date):
+            seen.append(trade_date)
+            return [Observation("f1", "price", trade_date, 42.0)]
+
+    conn.execute("UPDATE sources SET fetcher='fake.sameday' WHERE id='fake'"); conn.commit()
+    src = conn.execute("SELECT * FROM sources WHERE id='fake'").fetchone()
+    insts = conn.execute("SELECT * FROM instruments WHERE source_id='fake'").fetchall()
+    r = C.run_source(conn, src, insts, "2026-10-16", same_day=True)   # 周五：目标日=当天
+    assert seen[-1] == "2026-10-16" and r["status"] == "ok"
+    C.run_source(conn, src, insts, "2026-10-17", same_day=True)       # 周六：目标日=前一交易日
+    assert seen[-1] == "2026-10-16"
+    C.run_source(conn, src, insts, "2026-10-16")                      # 不带 same-day：仍 lag 语义
+    assert seen[-1] == "2026-10-15"
+
+def test_run_source_same_day_completeness_guard(conn, fake_source):
+    # 完整性保险：当日行数 < 前一交易日 50% 视为"未公布齐"——不落库、返回 empty、
+    # 该日保持未覆盖（次日 09:00 档 lag=1 的目标日正是它，自动补齐）；行数正常照常落库
+    for i in range(2, 5):   # 成分扩到 4 只
+        conn.execute("INSERT OR REPLACE INTO instruments"
+                     "(id,source_id,code,metric,name,sort_order) VALUES(?, 'fake', ?, 'price', ?, ?)",
+                     (f"f{i}", f"F{i}", f"假{i}", i))
+    for i in range(1, 5):   # 前一交易日（10-15）全有数据 → 完整性基线 4 行
+        conn.execute("INSERT INTO observations VALUES"
+                     f"('f{i}','price','2026-10-15',1.0,NULL,'2026-10-15T17:00:00')")
+    conn.commit()
+    state = {"n": 1}
+
+    @register("fake.partial")
+    class P:
+        source_id = "fake"; lag_days = 1
+        def __init__(self, source, instruments): pass
+        def fetch(self, trade_date):
+            return [Observation(f"f{i}", "price", trade_date, 42.0)
+                    for i in range(1, state["n"] + 1)]
+
+    conn.execute("UPDATE sources SET fetcher='fake.partial' WHERE id='fake'"); conn.commit()
+    src = conn.execute("SELECT * FROM sources WHERE id='fake'").fetchone()
+    insts = conn.execute("SELECT * FROM instruments WHERE source_id='fake'").fetchall()
+    r = C.run_source(conn, src, insts, "2026-10-16", same_day=True)
+    assert r["status"] == "empty" and r["rows"] == 0 and r["covered"] is False
+    assert conn.execute(   # 未落库 → 该日未覆盖
+        "SELECT COUNT(*) c FROM observations WHERE trade_date='2026-10-16'"
+    ).fetchone()["c"] == 0
+    state["n"] = 3         # 3 行 ≥ 4*50% → 照常落库
+    r = C.run_source(conn, src, insts, "2026-10-16", same_day=True)
+    assert r["status"] == "ok" and r["rows"] == 3 and r["covered"] is True
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM observations WHERE trade_date='2026-10-16'"
+    ).fetchone()["c"] == 3

@@ -66,7 +66,8 @@ def test_missed_dates_returns_uncovered_trading_days(monkeypatch, conn):
     C.run_source(conn, src, insts, "2026-10-14")   # target=10-13
     days = S.missed_dates(conn, dt.date(2026, 10, 16))
     assert "2026-10-14" in days and "2026-10-15" in days
-    assert "2026-10-16" not in days   # 今天的采集目标(10-15)由当日 16:40 例行跑覆盖
+    assert "2026-10-16" not in days   # 10-16 是今日 16:40 same-day 档目标（例行职责）；
+                                      # 欠账基准线只到昨日 10-15（09:00 档保证）
 
 def test_catchup_runs_backfill_for_stale_sources(monkeypatch, conn):
     monkeypatch.setattr(S, "_trade_days", lambda: None)
@@ -83,3 +84,8 @@ def test_catchup_runs_backfill_for_stale_sources(monkeypatch, conn):
     C.run_source(conn, src, insts, "2026-10-14")   # 库内最新 target=10-13
     n = S.catchup_if_stale(conn, today=dt.date(2026, 10, 16))
     assert n == 1 and called["d_from"] == "2026-10-14"   # 从 max+1 起补
+
+def test_slot_args_same_day_only_for_1640():
+    # 16:40 档带 --same-day 抓当日（当日数据当日可见）；09:00 档无参抓前一交易日（兜底）
+    assert S._slot_args(dt.datetime(2026, 10, 16, 16, 40)) == ["--same-day"]
+    assert S._slot_args(dt.datetime(2026, 10, 19, 9, 0)) == []

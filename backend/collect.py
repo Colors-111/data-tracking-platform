@@ -84,13 +84,38 @@ def trade_dates_from_to(d_from: str, d_to: str) -> list[str]:
         return out
     return list(days[bisect.bisect_left(days, d_from):bisect.bisect_right(days, d_to)])
 
-def run_source(conn, source, instruments, run_date: str) -> dict:
+def is_trade_date(d: str) -> bool:
+    """d（ISO 'YYYY-MM-DD'）是否交易日；无日历/超出日历上界按工作日降级。"""
+    days = _trade_days()
+    if not days or d > days[-1]:
+        return dt.date.fromisoformat(d).weekday() < 5
+    return d in days
+
+def run_source(conn, source, instruments, run_date: str, same_day: bool = False) -> dict:
     started = dt.datetime.now().isoformat(timespec="seconds")
     result = {"source_id": source["id"], "rows": 0, "status": "ok", "error": None}
     try:
         fetcher = build_fetcher(source["fetcher"], source, instruments)
-        target = previous_trade_date(run_date, fetcher.lag_days)
+        if same_day:
+            # 16:40 档抓当日：目标日 = run_date 本身（忽略 lag）；非交易日取前一交易日
+            target = run_date if is_trade_date(run_date) else previous_trade_date(run_date, 1)
+        else:
+            target = previous_trade_date(run_date, fetcher.lag_days)
         obs = fetch_with_retry(fetcher, target)
+        if same_day and obs:
+            # 完整性保险：当日行数 < 前一交易日 50% 视为"未公布齐"——不落库，
+            # 该日保持未覆盖，次日 09:00 档 lag=1 的目标日正是它，自动补齐（自愈闭环）
+            prev_d = previous_trade_date(target, 1)
+            prev_cnt = conn.execute(
+                """SELECT COUNT(*) c FROM observations o
+                     JOIN instruments i ON i.id=o.instrument_id
+                    WHERE i.source_id=? AND o.trade_date=?""",
+                (source["id"], prev_d)).fetchone()["c"]
+            if prev_cnt and len(obs) < prev_cnt * 0.5:
+                log.warning("源 %s 当日(%s)数据疑未公布齐：%d 行 < 前一交易日(%s) %d 行的"
+                            "50%%，丢弃不落库（次日 09:00 档自动补齐）",
+                            source["id"], target, len(obs), prev_d, prev_cnt)
+                obs = []
         upsert_observations(conn, obs, started)
         result["rows"] = len(obs)
         result["target_date"] = target
@@ -194,6 +219,9 @@ def main(argv=None):
     ap.add_argument("--force", action="store_true",
                     help="backfill 忽略 covered 跳过：给已有源扩成分后强制重抓历史"
                          "（幂等 upsert，不重不漏）")
+    ap.add_argument("--same-day", action="store_true",
+                    help="16:40 档抓当日：目标日=run_date 本身（忽略 lag；非交易日取前一"
+                         "交易日），含完整性保险（<前一交易日 50% 行数不落库）；回补模式忽略")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
@@ -283,7 +311,7 @@ def main(argv=None):
         insts = conn.execute(
             "SELECT * FROM instruments WHERE source_id=? ORDER BY sort_order",
             (s["id"],)).fetchall()
-        results.append(run_source(conn, s, insts, args.date))
+        results.append(run_source(conn, s, insts, args.date, same_day=args.same_day))
     send_summary(results)
     bad = [r for r in results if r["status"] == "failed"]
     # 仅 failed 非零退出（触发 systemd OnFailure 崩溃告警）；
