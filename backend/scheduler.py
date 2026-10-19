@@ -1,16 +1,22 @@
-"""常驻调度器：交易日 16:40（Asia/Shanghai）触发采集；启动时补跑漏掉的交易日。
+"""常驻调度器：交易日 09:00 / 16:40 两档（Asia/Shanghai）触发采集；启动时补跑漏掉的交易日。
    替代宿主机 systemd timer（docker 原生、日历感知、自带补跑）。
 
    用法：uv run python -m backend.scheduler
 
-   语义要点：
-   - 例行跑（当日 16:40）目标日 = 前一交易日（lag=1），故"昨日交易日"是源是否
-     落后的判定基准线；今天的数据由今日 16:40 例行跑覆盖，不算错过；
+   双档语义：
+   - 09:00 档：ETF 份额为 T+1 公布（实测交易所收盘后不久即公布当日份额终值）——
+     次日上午即可见前一交易日数据，比 16:40 档早 7.5 小时；
+   - 16:40 档：兜底数据源晚公布的情况，并覆盖商品等当日盘后数据；
+   - 两档跑同一套"例行采集 + catchup"：例行目标日均为前一交易日，upsert 幂等
+     （第二档重抓不产生重复行），catchup 的 backfill 按目标日覆盖跳过——
+     09:00 已取到时 16:40 的补查近乎零开销；
+   - 例行跑（当日触发）目标日 = 前一交易日（lag=1），故"昨日交易日"是源是否
+     落后的判定基准线；今天的数据由今日两档例行跑覆盖，不算错过；
    - missed_dates/catchup 只看已有数据的源：max 为 NULL 视为未初始化，
      归首次手动回补管（README 快速开始的 --backfill 步骤），否则新库会被判
      "缺失全部历史"；
    - 回补区间 d_to=昨日：今日例行跑会覆盖最新目标日，避免与之重复 fetch；
-     若某日例行失败，次日启动补跑会把缺口自动追上（backfill 断点续跑语义）。"""
+     若某日例行失败，次日启动/下一档触发会把缺口自动追上（backfill 断点续跑语义）。"""
 import datetime as dt
 import logging
 import time
@@ -19,7 +25,7 @@ from .app.db import connect, init_db
 from . import collect as C
 
 log = logging.getLogger("scheduler")
-RUN_TIME = dt.time(16, 40)
+RUN_TIMES = (dt.time(9, 0), dt.time(16, 40))
 
 
 def _trade_days():
@@ -37,25 +43,25 @@ def _is_trade_day(d: dt.date) -> bool:
 
 
 def next_run(now: dt.datetime) -> dt.datetime:
-    """下一个交易日 16:40（本地时间；容器 TZ=Asia/Shanghai）。
+    """下一个交易日的最近触发档（09:00 / 16:40；本地时间，容器 TZ=Asia/Shanghai）。
 
     日历耗尽双保险：_is_trade_day 对超出日历上界的日期按工作日降级；此处再设
     400 次迭代上限，超限告警并按工作日推算返回——常驻进程跨年绝不假死。
     """
-    candidate = now.replace(hour=RUN_TIME.hour, minute=RUN_TIME.minute,
-                            second=0, microsecond=0)
-    # 恰为 16:40:00.000000（candidate == now）也顺延：主循环 sleep 醒来于
-    # 16:40:00.00x 后才重算此分支，恒等情形实际不可达，纯防御
-    if candidate <= now:
-        candidate += dt.timedelta(days=1)
+    day = now.replace(hour=0, minute=0, second=0, microsecond=0)
     for _ in range(400):
-        if _is_trade_day(candidate.date()):
-            return candidate
-        candidate += dt.timedelta(days=1)
+        if _is_trade_day(day.date()):
+            for t in RUN_TIMES:
+                c = day.replace(hour=t.hour, minute=t.minute)
+                # 恰为触发点（candidate == now）也顺延：主循环 sleep 醒来于
+                # 09:00:00.00x 后才重算此分支，恒等情形实际不可达，纯防御
+                if c > now:
+                    return c
+        day += dt.timedelta(days=1)
     log.error("连续 400 日未找到交易日（交易日历异常？），按工作日降级推算下次采集")
-    while candidate.weekday() >= 5:
-        candidate += dt.timedelta(days=1)
-    return candidate
+    while day.weekday() >= 5:
+        day += dt.timedelta(days=1)
+    return day.replace(hour=RUN_TIMES[0].hour, minute=RUN_TIMES[0].minute)
 
 
 def _stale_sources(conn, today: dt.date):
