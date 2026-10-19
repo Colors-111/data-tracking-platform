@@ -94,7 +94,7 @@ def test_szse_failure_isolated_sse_still_produces(mixed_env, monkeypatch, caplog
     monkeypatch.setattr(mod.ak, "fund_scale_daily_szse", boom)
     obs = mixed_env.fetch("2026-10-14")
     got = {o.instrument_id: o for o in obs}
-    assert set(got) == {"512500", "510500", "510580"}
+    assert set(got) == {"512500", "510500", "510580", "512510"}
     assert got["512500"].metric == "share"
     assert "SZSE" in caplog.text and "szse down" in caplog.text
 

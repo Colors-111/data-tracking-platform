@@ -26,7 +26,7 @@ def test_seed_loaded(conn):
     ).fetchone()["c"] == 0   # 独立源行删除：执行器不再单独跑它
     assert conn.execute(
         "SELECT COUNT(*) c FROM instruments WHERE source_id='hs300-etf'"
-    ).fetchone()["c"] == 5
+    ).fetchone()["c"] == 11
     # 商品组源抽查：铜 7（cu-cftc 移除——CFTC 接口无铜品种列，后续直连 COT 立项）、
     # 黄金 10（含 au-london-price 伦敦金现、au-gld-spdr SPDR 黄金 ETF 持仓）
     assert conn.execute(
@@ -38,7 +38,7 @@ def test_seed_loaded(conn):
     # v1.3.x 大 ETF 补齐（90% 原则）：中证500 +2、中证1000 +1、A500 +8（SQL 精算选足）
     assert conn.execute(
         "SELECT COUNT(*) c FROM instruments WHERE source_id='csi500-etf'"
-    ).fetchone()["c"] == 5
+    ).fetchone()["c"] == 6
     assert conn.execute(
         "SELECT COUNT(*) c FROM instruments WHERE source_id='zz1000-etf'"
     ).fetchone()["c"] == 4

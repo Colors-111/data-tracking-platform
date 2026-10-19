@@ -28,7 +28,7 @@ CAT_PATTERNS = {
 # 类别排除词（name 含任一即剔除）：与 CAT_PATTERNS 配对使用
 CAT_EXCLUDES = {
     'hs300-etf':  r'增强|联接|红利|现金|AH',
-    'csi500-etf': r'增强|联接|标普|A500|现金|红利',
+    'csi500-etf': r'增强|联接|标普|A500|现金|红利|指增',
     'star50-etf': r'增强|联接',
     'chinext-etf': r'增强|联接',
     'dividend-etf': r'增强|联接',

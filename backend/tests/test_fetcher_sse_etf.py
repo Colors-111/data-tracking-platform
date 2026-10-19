@@ -27,7 +27,7 @@ def sse_env(conn, monkeypatch):
 def test_fetch_filters_target_codes(sse_env):
     obs = sse_env.fetch("2026-09-30")
     ids = {o.instrument_id for o in obs}
-    assert {"510300", "510310"} <= ids and len(ids) == 5
+    assert {"510300", "510310"} <= ids and len(ids) == 9   # 5+4 SSE 新成员（SZSE 2 只不在上交所快照）
     assert all(o.metric == "share" and o.trade_date == "2026-09-30" for o in obs)
 
 def test_fetch_converts_to_yi(sse_env):
@@ -35,6 +35,7 @@ def test_fetch_converts_to_yi(sse_env):
     obs = sse_env.fetch("2026-09-30")
     by_id = {o.instrument_id: o for o in obs}
     assert by_id["510300"].value == pytest.approx(241.1959, abs=0.01)
+    assert by_id["515330"].value > 0   # 天弘沪深300（v1.3.x 补齐品种）
 
 def test_lag_days_is_one(sse_env):
     assert sse_env.lag_days == 1
