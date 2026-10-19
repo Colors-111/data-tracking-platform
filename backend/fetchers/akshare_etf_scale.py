@@ -13,6 +13,7 @@ from functools import partial
 import akshare as ak
 from ._util import (CODE_CANDIDATES, SHARE_CANDIDATES, clean_name, col,
                     norm_code, normalize_date, run_branches)
+from .akshare_sse_etf import _call_sse
 from .base import Observation, register
 
 log = logging.getLogger(__name__)
@@ -42,7 +43,7 @@ class EtfScaleFetcher:
         return run_branches(log, "etf_scale", branches)
 
     def _fetch_sse(self, trade_date: str, d: str, codes: dict) -> list[Observation]:
-        df = ak.fund_etf_scale_sse(d)
+        df = _call_sse(d)   # 未发布（接口空表）→ None → 返回 []，待下档重试
         if df is None or df.empty:
             return []
         c_code = col(df, CODE_CANDIDATES, "代码")

@@ -46,6 +46,25 @@ def test_fetch_empty_df_returns_empty(sse_env, monkeypatch):
     monkeypatch.setattr(mod.ak, "fund_etf_scale_sse", lambda d: pd.DataFrame())
     assert sse_env.fetch("2026-09-30") == []
 
+def test_unpublished_returns_empty(sse_env, monkeypatch, caplog):
+    # 当日数据未发布：akshare 对接口空 result 不返回空 DataFrame，而是内部
+    # 列选择抛 KeyError("None of [...] are in the [columns]")——翻译为空产出
+    # （记 empty 待下档重试），日志说明"尚未发布"而非裸 KeyError 误导排障
+    import backend.fetchers.akshare_sse_etf as mod
+    err = KeyError("None of [Index(['序号', '基金代码', '基金简称', 'ETF类型',"
+                   " '统计日期', '基金份额'], dtype='str')] are in the [columns]")
+    monkeypatch.setattr(mod.ak, "fund_etf_scale_sse", lambda d: (_ for _ in ()).throw(err))
+    assert sse_env.fetch("2026-09-30") == []
+    assert "尚未发布" in caplog.text
+
+def test_unrelated_keyerror_reraises(sse_env, monkeypatch):
+    # KeyError 其余形态（真异常）不被吞——照常抛出 fail-loud
+    import backend.fetchers.akshare_sse_etf as mod
+    monkeypatch.setattr(mod.ak, "fund_etf_scale_sse",
+                        lambda d: (_ for _ in ()).throw(KeyError("别的东西")))
+    with pytest.raises(KeyError, match="别的东西"):
+        sse_env.fetch("2026-09-30")
+
 def test_missing_column_raises(sse_env, monkeypatch):
     # 锁定 _col fail-loud：缺份额列时抛 ValueError，而非静默产出错误数据
     import backend.fetchers.akshare_sse_etf as mod

@@ -99,6 +99,19 @@ def test_szse_failure_isolated_sse_still_produces(mixed_env, monkeypatch, caplog
     assert "SZSE" in caplog.text and "szse down" in caplog.text
 
 
+def test_sse_unpublished_isolated_szse_still_produces(mixed_env, monkeypatch, caplog):
+    # 上交所"当日未发布"（接口空表 → akshare 内部 KeyError）按分支隔离：
+    # 只告警跳过 SSE，深交所品种照常产出；日志说明"尚未发布"而非裸 KeyError
+    import backend.fetchers.akshare_etf_scale as mod
+    err = KeyError("None of [Index(['序号', '基金代码'], dtype='str')] are in the [columns]")
+    monkeypatch.setattr(mod.ak, "fund_etf_scale_sse",
+                        lambda d: (_ for _ in ()).throw(err))
+    obs = mixed_env.fetch("2026-10-14")
+    got = {o.instrument_id for o in obs}
+    assert {"159922", "159820"} <= got and "512500" not in got   # 深交所在、上交所缺
+    assert "尚未发布" in caplog.text
+
+
 def test_both_exchanges_fail_reraises(mixed_env, monkeypatch):
     # 两所全部失败 → 仍抛（run_source 能标 failed；静默全空更危险）
     import backend.fetchers.akshare_etf_scale as mod
