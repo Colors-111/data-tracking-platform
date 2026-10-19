@@ -18,10 +18,8 @@ const option = computed(() => ({
   color: PALETTE,
   tooltip: {
     trigger: "axis",
-    // 带单位提示（归一化模式无单位，不格式化）
-    ...(props.unit && !props.percent
-      ? { valueFormatter: (v) => (v == null ? "-" : `${v} ${props.unit}`) }
-      : {}),
+    // 数值统一两位小数；带单位提示（归一化模式无单位，不拼单位）
+    valueFormatter: (v) => (v == null ? "-" : `${Number(v).toFixed(2)}${props.unit && !props.percent ? ` ${props.unit}` : ""}`),
   },
   legend: { type: "scroll", top: 0 },
   grid: { left: 8, right: 20, top: 36, bottom: 56, containLabel: true }, // containLabel 防长轴标签裁剪
