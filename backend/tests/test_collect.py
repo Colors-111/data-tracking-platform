@@ -340,6 +340,7 @@ def test_run_source_same_day_full_history_no_target_is_empty(conn, fake_source):
     insts = conn.execute("SELECT * FROM instruments WHERE source_id='fake'").fetchall()
     r = C.run_source(conn, src, insts, "2026-10-16", same_day=True)
     assert r["status"] == "empty" and r["covered"] is False
+    assert r["rows"] == 0   # 历史行虽写入，但当日未发布——摘要不显示"空源: 4 万行"
     assert conn.execute(
         "SELECT COUNT(*) c FROM observations WHERE trade_date='2026-10-16'"
     ).fetchone()["c"] == 0

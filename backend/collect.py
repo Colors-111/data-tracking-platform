@@ -130,6 +130,10 @@ def run_source(conn, source, instruments, run_date: str, same_day: bool = False)
             # 不是 stale：全历史型源会返回大量历史行，按 source_max_date 判会把
             # "当日未更新"误报为 stale
             result["status"] = "empty"
+            if same_day and not today_cnt:
+                # 全历史型源此时仍写入了历史行，但当日未发布——rows 记 0，
+                # 避免摘要出现"空 margin: 40263 行"的自相矛盾
+                result["rows"] = 0
         elif (m := source_max_date(conn, source["id"])) and m < target:
             result["status"] = "stale"
     except Exception as e:  # 单源失败不阻断其他源

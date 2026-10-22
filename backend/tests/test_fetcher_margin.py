@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from backend.fetchers.base import build_fetcher
+from backend.fetchers._util import normalize_date
 
 FIX = Path(__file__).parent / "fixtures"
 
@@ -291,9 +292,10 @@ def test_cross_check_szse_mismatch_warns(margin_env, monkeypatch, caplog):
 
 
 def test_cross_check_sse_uses_common_latest_date(margin_env, monkeypatch, caplog):
-    # SSE 滞后：目标日（2026-10-22）无数据，但回看窗口内共同最新日 2026-10-21
-    # 存在 → 用该日比对（否则近期档位永远"尚无数据"静默）；偏差 2% → warning 带比对日
+    # SSE 滞后：目标日（2026-10-22）无数据，但 SSE 返回与 obs 的共同最新日
+    # 2026-10-21 存在 → 用该日比对（否则近期档位永远"尚无数据"静默）；偏差 2% → warning 带比对日
     import backend.fetchers.akshare_margin as mod
+    caplog.set_level(logging.INFO)
     common = "2026-10-21"
     src = pd.read_json(FIX / "margin_lg_sh.json").iloc[-1]
 
@@ -306,12 +308,14 @@ def test_cross_check_sse_uses_common_latest_date(margin_env, monkeypatch, caplog
             common, f("融资余额"), f("融资融券余额"),
             securities=f("融券余额"), buying=f("融资买入额")))
     margin_env.fetch("2026-10-22")   # 目标日不在 fixture/SSE 返回中
+    assert "回看窗口内无共同日期" not in caplog.text
     assert "不一致" in caplog.text and common in caplog.text
 
 
 def test_cross_check_sse_common_latest_within_tolerance(margin_env, monkeypatch, caplog):
-    # 同上走共同最新日，但偏差 0.1%（容差内）→ 无 warning
+    # 同上走共同最新日，但偏差 0.1%（容差内）→ 无 warning；确认确实发生了比对
     import backend.fetchers.akshare_margin as mod
+    caplog.set_level(logging.INFO)
     common = "2026-10-21"
     src = pd.read_json(FIX / "margin_lg_sh.json").iloc[-1]
 
@@ -324,6 +328,48 @@ def test_cross_check_sse_common_latest_within_tolerance(margin_env, monkeypatch,
             common, f("融资余额"), f("融资融券余额"),
             securities=f("融券余额"), buying=f("融资买入额")))
     margin_env.fetch("2026-10-22")
+    assert "回看窗口内无共同日期" not in caplog.text   # 有共同日 → 已比对
+    assert "不一致" not in caplog.text
+
+
+def _sh_row_on(date_str):
+    df = pd.read_json(FIX / "margin_lg_sh.json")
+    rows = df[[normalize_date(v) == date_str for v in df["日期"]]]
+    assert len(rows) == 1
+    return rows.iloc[0]
+
+
+def test_cross_check_sse_lag_model_compares_intersection(margin_env, monkeypatch, caplog):
+    # 真实滞后模型：16:40 档 target=10-22、obs 最新=10-21，SSE 仅返回到 T-6=10-14。
+    # 只按 obs 日期取"共同最新"会选 10-21（SSE 无此行）永远静默；必须与 SSE 返回
+    # 日期求交 → 比对 10-14，偏差 2% → 告警含 10-14
+    import backend.fetchers.akshare_margin as mod
+    caplog.set_level(logging.INFO)
+    compare = "2026-10-14"
+    src = _sh_row_on(compare)
+
+    def f(c):
+        return src[c] * 1.02 if c == "融资余额" else src[c]
+
+    monkeypatch.setattr(
+        mod.ak, "stock_margin_sse",
+        lambda start_date, end_date: _sse_df(
+            compare, f("融资余额"), f("融资融券余额"),
+            securities=f("融券余额"), buying=f("融资买入额")))
+    margin_env.fetch("2026-10-22")
+    assert "回看窗口内无共同日期" not in caplog.text
+    assert "不一致" in caplog.text and compare in caplog.text
+
+
+def test_cross_check_sse_empty_response_silent(margin_env, monkeypatch, caplog):
+    # SSE 返回空表（尚未发布）→ info 静默，不比对
+    import backend.fetchers.akshare_margin as mod
+    caplog.set_level(logging.INFO)
+    monkeypatch.setattr(mod.ak, "stock_margin_sse",
+                        lambda start_date, end_date: pd.DataFrame())
+    margin_env.fetch(FIX_LATEST)
+    assert "SSE 尚无 2026-10-20 数据" in caplog.text
+    assert "无共同日期" not in caplog.text
     assert "不一致" not in caplog.text
 
 

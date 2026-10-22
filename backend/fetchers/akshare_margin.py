@@ -132,8 +132,9 @@ class MarginFetcher:
            远古目标日静默跳过（backfill 2010 起逐日校验需数千请求，不划算——
            交易所与乐咕同源转发，近期段持续校验已覆盖设计意图）。
 
-           SSE 约滞后 5 个交易日，目标日常无数据：取回看窗口 [target-30, target]
-           内 obs 与 SSE 都有的最新日期作为比对日（否则近期档位永远"尚无数据"静默）。
+           SSE 约滞后 5 个交易日：必须【先取回直连 df 的日期】再与 obs 日期求交，
+           取交集最大值比对。只看 obs 最新日会取到 target-1/target，而 SSE 此时
+           最多到 target-6，永远无交集 → 校验通道日常一次都不触发。
            SZSE 为单日接口，只能查 target，target 无自产数据则无可比对。"""
         try:
             target = dt.date.fromisoformat(trade_date)
@@ -144,41 +145,37 @@ class MarginFetcher:
             return
         window_start = (target - dt.timedelta(days=self.CHECK_RECENT_DAYS)).isoformat()
         val = {(o.instrument_id, o.trade_date): o.value for o in obs}
-        lg_iids = {iid for targets in self._lg.values() for iid in targets.values()}
 
-        def mine_at(d: str) -> dict:
-            """某日的沪深自产值（复用 self._lg 映射，免去从 instrument_id 二次解析）。"""
+        def mine_at(d: str, exch: str) -> dict:
+            """某日某所的入库值（复用 self._lg 映射，免去从 instrument_id 二次解析）。"""
             mine = {}
-            for exch, targets in self._lg.items():
-                for sfx, iid in targets.items():
-                    v = val.get((iid, d))
-                    if v is not None:
-                        mine[(exch, LG_META[sfx][2])] = v
+            for sfx, iid in self._lg[exch].items():
+                v = val.get((iid, d))
+                if v is not None:
+                    mine[(exch, LG_META[sfx][2])] = v
             return mine
 
-        target_mine = mine_at(trade_date)
-        common = [td for (iid, td) in val
-                  if iid in lg_iids and window_start <= td <= trade_date]
-        if not common:        # 回看窗口内无沪深产出 → 无可比对
-            return
-        common_latest = max(common)
-        sse_mine = target_mine if common_latest == trade_date else mine_at(common_latest)
-        if sse_mine:
-            self._check_sse(common_latest, sse_mine)
+        target_mine = mine_at(trade_date, "SH")
+        target_mine.update(mine_at(trade_date, "SZ"))
+        sh_dates = {td for (iid, td) in val if iid in self._lg["SH"].values()}
+        if sh_dates:
+            self._check_sse(trade_date, window_start, val, sh_dates)
         if target_mine:       # SZSE 单日接口只能查 target
             self._check_szse(trade_date, target_mine)
 
-    def _check_sse(self, compare_date: str, mine: dict) -> None:
+    def _check_sse(self, trade_date: str, window_start: str,
+                   val: dict, sh_dates: set) -> None:
+        """取 SSE 回看区间 → 与 obs 的沪市日期求交 → 取交集最新日比对。"""
         try:
-            start = (dt.date.fromisoformat(compare_date)
+            start = (dt.date.fromisoformat(trade_date)
                      - dt.timedelta(days=self.CHECK_RECENT_DAYS)).strftime("%Y%m%d")
             df = ak.stock_margin_sse(start_date=start,
-                                     end_date=compare_date.replace("-", ""))
+                                     end_date=trade_date.replace("-", ""))
         except Exception as e:    # 断连/限流/上游解析异常（如空数据 ValueError）→ 辅助通道静默
             log.info("两融校验跳过（SSE 直连失败）: %s", e)
             return
         if df is None or df.empty:
-            log.info("两融校验跳过（SSE 尚无 %s 数据）", compare_date)
+            log.info("两融校验跳过（SSE 尚无 %s 数据）", trade_date)
             return
         try:                      # 只有我们自己的契约校验才算结构变更
             c_d = col(df, ["信用交易日期"], "日期")
@@ -187,12 +184,21 @@ class MarginFetcher:
         except ValueError as e:   # 列结构变更必须可见（否则永久失去校验能力无人知）
             log.warning("两融校验通道结构变更（SSE）: %s", e)
             return
-        row = next((r for _, r in df.iterrows()
-                    if normalize_date(r[c_d]) == compare_date), None)
-        if row is None:
-            log.info("两融校验跳过（SSE 回看窗口内无共同日期 %s）", compare_date)
+        sse_dates = {normalize_date(r[c_d]) for _, r in df.iterrows()}
+        common = [d for d in sse_dates
+                  if d in sh_dates and window_start <= d <= trade_date]
+        if not common:
+            log.info("两融校验跳过（SSE 回看窗口内无共同日期，目标日 %s）", trade_date)
             return
-        self._compare("SH", self.SSE_COLS, row, mine, compare_date)
+        compare_date = max(common)
+        row = next(r for _, r in df.iterrows()
+                   if normalize_date(r[c_d]) == compare_date)
+        sh_mine = {}
+        for sfx, iid in self._lg["SH"].items():
+            v = val.get((iid, compare_date))
+            if v is not None:
+                sh_mine[("SH", LG_META[sfx][2])] = v
+        self._compare("SH", self.SSE_COLS, row, sh_mine, compare_date)
 
     def _check_szse(self, trade_date: str, mine: dict) -> None:
         try:
