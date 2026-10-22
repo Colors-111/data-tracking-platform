@@ -9,6 +9,14 @@ export const METRIC_SECTIONS = [
   { key: "warehouse", label: "仓单" },
   { key: "positioning", label: "资金·持仓", note: "LME 净持仓源停更于 2021-09（历史数据仍可查）" },
   { key: "reserve", label: "储备" },
+  // ---- v1.4 融资融券（设计 §5.4）：余额类沪/深两线一图，杠杆状况区 3 metric 按单位分 3 图 ----
+  { key: "financing", label: "融资余额" },
+  { key: "securities", label: "融券余额" },
+  { key: "total", label: "两融余额", note: "融资余额+融券余额，沪深交易所口径；全市场口径见杠杆状况区" },
+  { key: "buying", label: "融资买入额" },
+  { key: "leverage", label: "杠杆状况",
+    keys: ["maintenance", "collateral", "investors"],  // 多 metric 同区（keys 数组）
+    note: "全市场两融账户口径（含北交所）；担保比例预警线 130%，担保物与投资者数 2015 年前后起有值" },
 ];
 
 // 商品源判定：任一 instrument 的 metric 非 share 即商品源（share-only 源保持旧布局）
@@ -21,7 +29,11 @@ export function isCommodityMeta(meta) {
 // iids 保持 instrument_meta 的键序（API 按 sort_order 构造）。
 export function groupSections(meta) {
   return METRIC_SECTIONS
-    .map(s => ({ ...s, iids: Object.keys(meta ?? {}).filter(iid => meta[iid].metric === s.key) }))
+    .map(s => {
+      const keys = s.keys ?? [s.key];   // 多 metric 区（如 leverage）声明 keys 数组
+      return { ...s, keys,
+               iids: Object.keys(meta ?? {}).filter(iid => keys.includes(meta[iid].metric)) };
+    })
     .filter(s => s.iids.length);
 }
 

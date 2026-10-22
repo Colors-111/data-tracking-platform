@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, test, expect } from "vitest";
 import { METRIC_SECTIONS, groupSections, groupCharts, isCommodityMeta } from "./metricSections.js";
 
 describe("groupSections（商品源按指标分区）", () => {
@@ -89,9 +89,12 @@ describe("isCommodityMeta（新旧布局切换）", () => {
 });
 
 describe("METRIC_SECTIONS 定义", () => {
-  it("分区顺序固定：价格→ETF持仓→库存→仓单→资金持仓→储备（持仓类靠前）", () => {
+  it("分区顺序固定：价格→ETF持仓→库存→仓单→资金持仓→储备→融资融券 5 区（持仓类靠前）", () => {
     expect(METRIC_SECTIONS.map(s => s.key))
-      .toEqual(["price", "holding", "inventory", "warehouse", "positioning", "reserve"]);
+      .toEqual([
+        "price", "holding", "inventory", "warehouse", "positioning", "reserve",
+        "financing", "securities", "total", "buying", "leverage",
+      ]);
   });
 
   it("key 唯一且 label 非空", () => {
@@ -113,5 +116,56 @@ describe("分区数据源说明（stale 源如实标注）", () => {
     const meta = { "cu-inventory": { metric: "inventory" }, "510300": { metric: "share" } };
     const secs = groupSections(meta);
     expect(secs.find(s => s.key === "inventory").note).toContain("LME");
+  });
+});
+
+// ---------- v1.4 融资融券分区（设计 §5.4） ----------
+// 全 11 仪器（生产 instrument_meta 全量）：8 只沪深余额/买入仪器 + 3 只全市场杠杆仪器
+const MARGIN_META = {
+  "margin-sh-financing": { metric: "financing", unit: "亿元" },
+  "margin-sz-financing": { metric: "financing", unit: "亿元" },
+  "margin-sh-securities": { metric: "securities", unit: "亿元" },
+  "margin-sz-securities": { metric: "securities", unit: "亿元" },
+  "margin-sh-total": { metric: "total", unit: "亿元" },
+  "margin-sz-total": { metric: "total", unit: "亿元" },
+  "margin-sh-buying": { metric: "buying", unit: "亿元" },
+  "margin-sz-buying": { metric: "buying", unit: "亿元" },
+  "margin-maintenance": { metric: "maintenance", unit: "%" },
+  "margin-collateral": { metric: "collateral", unit: "亿元" },
+  "margin-investors": { metric: "investors", unit: "万人" },
+};
+
+describe("v1.4 margin 分区", () => {
+  test("识别为分区页（非 share 源）", () => {
+    expect(isCommodityMeta(MARGIN_META)).toBe(true);
+  });
+
+  test("5 分区顺序：融资/融券/两融/买入/杠杆状况", () => {
+    const secs = groupSections(MARGIN_META);
+    expect(secs.map(s => s.key)).toEqual(
+      ["financing", "securities", "total", "buying", "leverage"]);
+  });
+
+  test("杠杆状况区收 3 个 metric（keys 多值）", () => {
+    const lev = groupSections(MARGIN_META).find(s => s.key === "leverage");
+    expect(lev.iids).toEqual(["margin-maintenance", "margin-collateral", "margin-investors"]);
+  });
+
+  test("杠杆状况区内按单位分 3 图（%/亿元/万人 不同图）", () => {
+    const lev = groupSections(MARGIN_META).find(s => s.key === "leverage");
+    const groups = groupCharts(lev.iids, MARGIN_META);
+    expect(groups.map(g => g.unit)).toEqual(["%", "亿元", "万人"]);
+  });
+
+  test("余额区沪+深同图（同为亿元不拆）", () => {
+    const fin = groupSections(MARGIN_META).find(s => s.key === "financing");
+    const groups = groupCharts(fin.iids, MARGIN_META);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].iids).toEqual(["margin-sh-financing", "margin-sz-financing"]);
+  });
+
+  test("既有商品源分区不回归（leverage 等 margin metric 不混入商品源页面）", () => {
+    const goldMeta = { "au-shfe-price": { metric: "price", unit: "元/克" } };
+    expect(groupSections(goldMeta).map(s => s.key)).toEqual(["price"]);
   });
 });
