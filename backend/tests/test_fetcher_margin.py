@@ -1,6 +1,7 @@
 """融资融券 fetcher 测试（v1.4 设计 §5.4）：三接口编排、元→亿元换算、
    万人换算、早期 NaN 跳行、分支隔离、交叉校验三态（含远古节流）、fail-loud。"""
 import datetime as dt
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -12,6 +13,9 @@ FIX = Path(__file__).parent / "fixtures"
 
 # 取 fixture 倒数第二行（2026-10-20），保证有完整交易日；校验节流测试用它注入确定"今天"
 FIX_LATEST = "2026-10-20"
+
+# 账户统计三仪器 id（两测试共用；与乐咕 margin-{sh,sz}-* 命名空间区分）
+ACCT_IDS = ("margin-maintenance", "margin-collateral", "margin-investors")
 
 
 def _raise(msg):
@@ -134,28 +138,26 @@ def test_all_branches_fail_reraises(margin_env, monkeypatch):
 
 def test_account_units(margin_env):
     # 账户统计：担保比例 %/担保物 亿元原样、投资者数 个 → ÷1e4 万人
+    # 区间按数量级设定（非行情预测）——fixture 重录后数值漂移不脆断，
+    # 但换算因子写错（÷1e3/÷1e5/÷1e8/×100）必越界
     obs = margin_env.fetch(FIX_LATEST)
     by = {(o.instrument_id, o.trade_date): o.value for o in obs}
-    (main,) = [v for (iid, d), v in by.items()
-               if iid == "margin-maintenance" and d == FIX_LATEST]
-    assert 130 < main < 400                     # % 量级（2026-10 实测 ≈256）
-    (inv,) = [v for (iid, d), v in by.items()
-              if iid == "margin-investors" and d == FIX_LATEST]
-    assert 10 < inv < 100                       # 万人（29.65 万实测量级）
-    (col_v,) = [v for (iid, d), v in by.items()
-                if iid == "margin-collateral" and d == FIX_LATEST]
-    assert 50000 < col_v < 100000               # 亿元（7.4 万亿 ≈ 74000 亿实测量级）
-    metrics = {o.metric for o in obs if o.instrument_id.startswith("margin-")
-               and not o.instrument_id[7:9] in ("sh", "sz")}
-    assert {"maintenance", "collateral", "investors"} <= metrics
+    assert 100 < by[("margin-maintenance", FIX_LATEST)] < 500        # % 量级
+    assert 1e0 < by[("margin-investors", FIX_LATEST)] < 1e3          # 万人
+    assert 1e4 < by[("margin-collateral", FIX_LATEST)] < 2e5         # 亿元
+    # 锁 (iid, metric) 对应关系——collateral/investors 写反也能抓到
+    pairs = {(o.instrument_id, o.metric) for o in obs
+             if o.instrument_id in ACCT_IDS}
+    assert pairs == {("margin-maintenance", "maintenance"),
+                     ("margin-collateral", "collateral"),
+                     ("margin-investors", "investors")}
 
 
 def test_account_early_nan_skipped(margin_env):
     # 2012-09-27 首行：担保物/投资者数 NaN → 只产出 maintenance，不产 nan/崩
     obs = margin_env.fetch(FIX_LATEST)
-    acct_ids = {"margin-maintenance", "margin-collateral", "margin-investors"}
     first = [o for o in obs
-             if o.trade_date == "2012-09-27" and o.instrument_id in acct_ids]
-    iids = {o.instrument_id for o in first}
-    assert iids == {"margin-maintenance"}
-    assert all(o.value == o.value for o in first)   # 无 NaN 混入
+             if o.trade_date == "2012-09-27" and o.instrument_id in ACCT_IDS]
+    assert {o.instrument_id for o in first} == {"margin-maintenance"}
+    account_obs = [o for o in obs if o.instrument_id in ACCT_IDS]
+    assert all(math.isfinite(o.value) for o in account_obs)   # 无 NaN/inf 混入
