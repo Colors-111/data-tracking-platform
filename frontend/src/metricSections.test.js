@@ -169,3 +169,10 @@ describe("v1.4 margin 分区", () => {
     expect(groupSections(goldMeta).map(s => s.key)).toEqual(["price"]);
   });
 });
+
+describe("METRIC_SECTIONS 完整性", () => {
+  it("metric 引用无重复（防同一指标在两个分区重复渲染）", () => {
+    const all = METRIC_SECTIONS.flatMap(s => (s.keys ?? [s.key]));
+    expect(new Set(all).size).toBe(all.length);
+  });
+});

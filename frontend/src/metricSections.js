@@ -12,7 +12,7 @@ export const METRIC_SECTIONS = [
   // ---- v1.4 融资融券（设计 §5.4）：余额类沪/深两线一图，杠杆状况区 3 metric 按单位分 3 图 ----
   { key: "financing", label: "融资余额" },
   { key: "securities", label: "融券余额" },
-  { key: "total", label: "两融余额", note: "融资余额+融券余额，沪深交易所口径；全市场口径见杠杆状况区" },
+  { key: "total", label: "两融余额", note: "融资余额+融券余额，沪深交易所口径；全市场账户统计（担保比例/担保物/投资者数）见杠杆状况区" },
   { key: "buying", label: "融资买入额" },
   { key: "leverage", label: "杠杆状况",
     keys: ["maintenance", "collateral", "investors"],  // 多 metric 同区（keys 数组）
@@ -31,7 +31,7 @@ export function groupSections(meta) {
   return METRIC_SECTIONS
     .map(s => {
       const keys = s.keys ?? [s.key];   // 多 metric 区（如 leverage）声明 keys 数组
-      return { ...s, keys,
+      return { ...s,
                iids: Object.keys(meta ?? {}).filter(iid => keys.includes(meta[iid].metric)) };
     })
     .filter(s => s.iids.length);
