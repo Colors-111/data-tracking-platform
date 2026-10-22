@@ -773,6 +773,6 @@ Expected: `融资融券 11 cards, as_of 2026-10-2x`。浏览器打开 `http://lo
 
 ## Self-Review 记录
 
-- **Spec 覆盖**：§5.4 仪器表（Task 2 seed 11 仪器 ✓）、乐咕/账户/SSE/SZSE 四通道（Task 3/4/5 ✓）、容差 0.005+节流 30 日历日（Task 5 ✓，设计"15 交易日"以 30 日历日近似——含节假日缓冲，实现更简单）、lag=1/movement_th=100（Task 2 ✓）、前端 5 分区+杠杆状况 3 图（Task 6 ✓）、fixture（Task 1 ✓）、回补 --from 2010-01-01（Task 7 ✓）
+- **Spec 覆盖**：§5.4 仪器表（Task 2 seed 11 仪器 ✓）、乐咕/账户/SSE/SZSE 四通道（Task 3/4/5 ✓）、容差 0.005+节流 30 日历日（Task 5 ✓，设计"15 交易日"以 30 日历日近似——含节假日缓冲，实现更简单）、lag=1/movement_th=2.0 环比%（Task 2 ✓，v1.4 审查修正）、前端 5 分区+杠杆状况 3 图（Task 6 ✓）、fixture（Task 1 ✓）、回补 --from 2010-01-01（Task 7 ✓）
 - **占位符**：Task 3 Step 3 占位 `_cross_check` 为渐进实现脚手架，Task 5 Step 3 完整替换——非 TBD
 - **类型一致**：`_wide_to_obs(df, targets: dict, meta: dict)`、`_cross_check(trade_date, obs)`、`_today()` 注入点在 Task 3 定义、Task 5 使用一致；`LG_META/ACCT_META` 键结构 (cname, div, metric) 全文一致
