@@ -1,6 +1,7 @@
 """融资融券 fetcher 测试（v1.4 设计 §5.4）：三接口编排、元→亿元换算、
    万人换算、早期 NaN 跳行、分支隔离、交叉校验三态（含远古节流）、fail-loud。"""
 import datetime as dt
+import logging
 import math
 from pathlib import Path
 
@@ -161,3 +162,76 @@ def test_account_early_nan_skipped(margin_env):
     assert {o.instrument_id for o in first} == {"margin-maintenance"}
     account_obs = [o for o in obs if o.instrument_id in ACCT_IDS]
     assert all(math.isfinite(o.value) for o in account_obs)   # 无 NaN/inf 混入
+
+
+# ---------- 交叉校验通道（Task 5） ----------
+# SSE 直连真实样本（2026-10-21 实测列与值；信用交易日期为 YYYYMMDD str）
+def _sse_df(date_str, financing, total, securities=1.9e10, buying=None):
+    d8 = date_str.replace("-", "")
+    if buying is None:
+        buying = financing * 0.05
+    return pd.DataFrame([{"信用交易日期": d8, "融资余额": financing,
+                          "融资买入额": buying, "融券余量": 3.2e9,
+                          "融券余量金额": securities, "融券卖出量": 6.9e7,
+                          "融资融券余额": total}])
+
+
+def test_cross_check_warns_on_mismatch(margin_env, monkeypatch, caplog):
+    # SSE 直连值偏离乐咕 2%（>0.5% 容差）→ warning 告警
+    # 取 FIX_LATEST 当日行（iloc[-1] 是次日 2026-10-21，日期列对不上不参与比对）
+    import backend.fetchers.akshare_margin as mod
+    src = pd.read_json(FIX / "margin_lg_sh.json").iloc[-2]
+    monkeypatch.setattr(
+        mod.ak, "stock_margin_sse",
+        lambda start_date, end_date: _sse_df(
+            FIX_LATEST, src["融资余额"] * 1.02, src["融资融券余额"]))
+    margin_env.fetch(FIX_LATEST)
+    assert "不一致" in caplog.text and "financing" in caplog.text
+
+
+def test_cross_check_within_tolerance(margin_env, monkeypatch, caplog):
+    # 差 0.1%（容差内）→ 无 warning（四项指标全部贴合乐咕）
+    import backend.fetchers.akshare_margin as mod
+    src = pd.read_json(FIX / "margin_lg_sh.json").iloc[-2]
+
+    def f(col):
+        return src[col] * 1.001
+
+    monkeypatch.setattr(
+        mod.ak, "stock_margin_sse",
+        lambda start_date, end_date: _sse_df(
+            FIX_LATEST, f("融资余额"), f("融资融券余额"),
+            securities=f("融券余额"), buying=f("融资买入额")))
+    margin_env.fetch(FIX_LATEST)
+    assert "不一致" not in caplog.text
+
+
+def test_cross_check_silent_on_direct_failure(margin_env, monkeypatch, caplog):
+    # 直连断连（env 默认 _raise）→ info 静默，产出不受影响、无 warning
+    caplog.set_level(logging.INFO)
+    obs = margin_env.fetch(FIX_LATEST)
+    assert obs and "不一致" not in caplog.text and "SSE net down" in caplog.text
+
+
+def test_cross_check_skipped_for_old_dates(margin_env, monkeypatch):
+    # 远古目标日（>30 日历日）→ 零直连调用（backfill 2010 起不逐日校验）
+    import backend.fetchers.akshare_margin as mod
+    calls = []
+
+    def probe(start_date, end_date):
+        calls.append(start_date)
+        return _sse_df(FIX_LATEST, 1.0, 1.0)
+
+    monkeypatch.setattr(mod.ak, "stock_margin_sse", probe)
+    margin_env.fetch("2020-01-02")
+    assert calls == []
+
+
+def test_cross_check_structure_change_warns(margin_env, monkeypatch, caplog):
+    # SSE 列结构变更（缺日期列 col() ValueError）→ warning 而非静默
+    # （校验通道结构变更必须可见，否则永久失去校验能力无人知）
+    import backend.fetchers.akshare_margin as mod
+    monkeypatch.setattr(mod.ak, "stock_margin_sse",
+                        lambda start_date, end_date: pd.DataFrame([{"x": 1}]))
+    margin_env.fetch(FIX_LATEST)
+    assert "结构变更" in caplog.text

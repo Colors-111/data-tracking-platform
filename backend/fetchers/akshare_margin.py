@@ -116,5 +116,84 @@ class MarginFetcher:
                     out.append(Observation(iid, metric, d, float(v) / div))
         return out
 
+    # 交易所直连列映射（直连单位为元，比对时统一换算到入库单位亿元再比）
+    SSE_COLS = {"financing": "融资余额", "securities": "融券余量金额",
+                "total": "融资融券余额", "buying": "融资买入额"}
+    SZ_COLS = {"financing": "融资余额", "securities": "融券余额",
+               "total": "融资融券余额", "buying": "融资买入额"}
+    CHECK_TOLERANCE = 0.005
+    CHECK_RECENT_DAYS = 30
+    YI = 1e8   # 直连元 → 入库亿元
+
     def _cross_check(self, trade_date: str, obs: list[Observation]) -> None:
-        """交叉校验占位（Task 5 实现，本任务空转保证 fetch 契约完整）。"""
+        """交易所直连交叉校验（只告警不落库）：近期目标日尽力比对。
+           远古目标日静默跳过（backfill 2010 起逐日校验需数千请求，不划算——
+           交易所与乐咕同源转发，近期段持续校验已覆盖设计意图）。"""
+        try:
+            target = dt.date.fromisoformat(trade_date)
+        except ValueError:
+            log.info("两融校验跳过（非法目标日）: %s", trade_date)
+            return
+        if (_today() - target).days > self.CHECK_RECENT_DAYS:
+            return
+        # 只取目标日当天的沪深产出（fetch 全历史返回，远古行不参与）
+        mine = {}
+        for o in obs:
+            if o.trade_date == trade_date:
+                parts = o.instrument_id.split("-")   # margin-sh-financing
+                if len(parts) == 3 and parts[1] in ("sh", "sz"):
+                    mine[(parts[1].upper(), o.metric)] = o.value
+        self._check_sse(trade_date, mine)
+        self._check_szse(trade_date, mine)
+
+    def _check_sse(self, trade_date: str, mine: dict) -> None:
+        try:
+            start = (dt.date.fromisoformat(trade_date)
+                     - dt.timedelta(days=self.CHECK_RECENT_DAYS)).strftime("%Y%m%d")
+            df = ak.stock_margin_sse(start_date=start,
+                                     end_date=trade_date.replace("-", ""))
+            row = None
+            if df is not None and not df.empty:
+                c_d = col(df, ["信用交易日期"], "日期")
+                row = next((r for _, r in df.iterrows()
+                            if normalize_date(r[c_d]) == trade_date), None)
+        except ValueError as e:   # 列结构变更必须可见（否则永久失去校验能力无人知）
+            log.warning("两融校验通道结构变更（SSE）: %s", e)
+            return
+        except Exception as e:    # 直连断连/限流——校验是辅助功能，静默跳过
+            log.info("两融校验跳过（SSE 直连失败）: %s", e)
+            return
+        if row is None:
+            log.info("两融校验跳过（SSE 尚无 %s 数据）", trade_date)
+            return
+        self._compare("SH", self.SSE_COLS, row, mine, trade_date)
+
+    def _check_szse(self, trade_date: str, mine: dict) -> None:
+        try:
+            df = ak.stock_margin_szse(date=trade_date.replace("-", ""))
+            row = None if df is None or df.empty else df.iloc[0]
+        except ValueError as e:
+            log.warning("两融校验通道结构变更（SZSE）: %s", e)
+            return
+        except Exception as e:
+            log.info("两融校验跳过（SZSE 直连失败）: %s", e)
+            return
+        if row is None:
+            log.info("两融校验跳过（SZSE 尚无 %s 数据）", trade_date)
+            return
+        self._compare("SZ", self.SZ_COLS, row, mine, trade_date)
+
+    def _compare(self, exch: str, cols: dict, row, mine: dict,
+                 trade_date: str) -> None:
+        """逐指标比对：mine 为入库亿元，直连为元 → 统一换算亿元后算相对差。"""
+        for metric, cname in cols.items():
+            base = mine.get((exch, metric))
+            theirs = row.get(cname) if hasattr(row, "get") else None
+            if base is None or theirs is None or pd.isna(theirs):
+                continue
+            theirs_yi = float(theirs) / self.YI
+            if base == 0:
+                continue                      # 零基数无法算相对差（早期数据）
+            if abs(theirs_yi - base) / abs(base) > self.CHECK_TOLERANCE:
+                log.warning("两融交叉校验不一致: %s %s %s 乐咕=%.2f 交易所=%.2f",
+                            exch, trade_date, metric, base, theirs_yi)
