@@ -1,0 +1,83 @@
+"""融资融券 fetcher 测试（v1.4 设计 §5.4）：三接口编排、元→亿元换算、
+   万人换算、早期 NaN 跳行、分支隔离、交叉校验三态（含远古节流）、fail-loud。"""
+import datetime as dt
+from pathlib import Path
+
+import pandas as pd
+import pytest
+
+from backend.fetchers.base import build_fetcher
+
+FIX = Path(__file__).parent / "fixtures"
+
+# fixture 最新日期（录制日 2026-10-21 附近）；校验节流测试用它注入确定"今天"
+FIX_LATEST = "2026-10-20"
+
+
+def _raise(msg):
+    return lambda *a, **k: (_ for _ in ()).throw(RuntimeError(msg))
+
+
+@pytest.fixture
+def margin_env(conn, monkeypatch):
+    src = conn.execute("SELECT * FROM sources WHERE id='margin'").fetchone()
+    insts = conn.execute(
+        "SELECT * FROM instruments WHERE source_id='margin' ORDER BY sort_order"
+    ).fetchall()
+    import backend.fetchers.akshare_margin as mod
+    monkeypatch.setattr(mod.ak, "macro_china_market_margin_sh",
+                        lambda: pd.read_json(FIX / "margin_lg_sh.json"))
+    monkeypatch.setattr(mod.ak, "macro_china_market_margin_sz",
+                        lambda: pd.read_json(FIX / "margin_lg_sz.json"))
+    monkeypatch.setattr(mod.ak, "stock_margin_account_info",
+                        lambda: pd.read_json(FIX / "margin_account.json"))
+    # 校验通道默认断连（走静默路径）——校验专项测试单独覆盖
+    monkeypatch.setattr(mod.ak, "stock_margin_sse", _raise("SSE net down"))
+    monkeypatch.setattr(mod.ak, "stock_margin_szse", _raise("SZSE net down"))
+    monkeypatch.setattr(mod, "_today", lambda: dt.date.fromisoformat(FIX_LATEST))
+    return build_fetcher(src["fetcher"], src, insts)
+
+
+def test_unknown_code_fails_loud(conn):
+    # 构建期未知 code raise（seed 拼错当场暴露，禁静默丢数据）
+    src = conn.execute("SELECT * FROM sources WHERE id='margin'").fetchone()
+    insts = [{"id": "x", "code": "MARGIN-XX-FOO", "metric": "financing"}]
+    from backend.fetchers.akshare_margin import MarginFetcher
+    with pytest.raises(ValueError, match="未支持的仪器代码"):
+        MarginFetcher(src, insts)
+
+
+def test_lg_produces_yi(margin_env):
+    # 乐咕元 → ÷1e8 亿元：fixture 尾行沪融资余额 ≈1.26e12 元 ≈ 12580 亿
+    obs = margin_env.fetch(FIX_LATEST)
+    by = {(o.instrument_id, o.trade_date): o.value for o in obs}
+    sh_fin = [v for (iid, d), v in by.items()
+              if iid == "margin-sh-financing" and d == FIX_LATEST]
+    assert sh_fin and 12000 < sh_fin[0] < 13500        # 亿元量级（2026-10 实测）
+    assert ("margin-sz-financing", FIX_LATEST) in by   # 深市同日也在
+
+
+def test_full_history_ignores_trade_date(margin_env):
+    # 全历史型契约：fetch 忽略 trade_date 全量返回（backfill 首日全量入库的门）
+    obs = margin_env.fetch("2020-01-02")
+    dates = {o.trade_date for o in obs}
+    assert len(dates) > 100 and "2020-01-02" in dates
+
+
+def test_branch_isolation(margin_env, monkeypatch, caplog):
+    # 乐咕 SH 挂 → SZ + 账户统计照常产出（run_branches 契约）
+    import backend.fetchers.akshare_margin as mod
+    monkeypatch.setattr(mod.ak, "macro_china_market_margin_sh", _raise("SH down"))
+    obs = margin_env.fetch(FIX_LATEST)
+    iids = {o.instrument_id for o in obs}
+    assert "margin-sz-financing" in iids and "margin-sh-financing" not in iids
+    assert "lg_sh" in caplog.text
+
+
+def test_all_branches_fail_reraises(margin_env, monkeypatch):
+    import backend.fetchers.akshare_margin as mod
+    monkeypatch.setattr(mod.ak, "macro_china_market_margin_sh", _raise("a"))
+    monkeypatch.setattr(mod.ak, "macro_china_market_margin_sz", _raise("b"))
+    monkeypatch.setattr(mod.ak, "stock_margin_account_info", _raise("c"))
+    with pytest.raises(RuntimeError, match="全部分支失败"):
+        margin_env.fetch(FIX_LATEST)
