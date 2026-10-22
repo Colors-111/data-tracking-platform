@@ -126,3 +126,22 @@ INSERT OR IGNORE INTO instruments(id,source_id,code,metric,name,sort_order) VALU
  ('560610','a500-etf','560610','share','A500指数',9),
  ('159353','a500-etf','159353','share','中证A500ETF景顺',10),
  ('560530','a500-etf','560530','share','A500ETF',11);
+
+-- ============ v1.4 融资融券（设计 §5.4） ============
+-- 市场杠杆资金追踪：沪深分开余额类（乐咕，元→亿元）+ 全市场杠杆状况类
+-- （中证金融账户统计：担保比例 %、担保物 亿元、参与交易投资者数 个→万人）。
+-- 全历史一次拉取（回补 3 请求）；当日晚间更新当日 → 16:40 档 empty、次日 09:00 补。
+INSERT OR IGNORE INTO sources(id,name,group_name,freq,fetcher,unit,movement_th,lag_days,enabled,sort_order) VALUES
+ ('margin','融资融券','市场资金','daily','akshare.margin','混合',100.0,1,1,40);
+INSERT OR IGNORE INTO instruments(id,source_id,code,metric,unit,name,sort_order) VALUES
+ ('margin-sh-financing','margin','MARGIN-SH-FINANCING','financing','亿元','沪市融资余额',1),
+ ('margin-sh-securities','margin','MARGIN-SH-SECURITIES','securities','亿元','沪市融券余额',2),
+ ('margin-sh-total','margin','MARGIN-SH-TOTAL','total','亿元','沪市两融余额',3),
+ ('margin-sh-buying','margin','MARGIN-SH-BUYING','buying','亿元','沪市融资买入额',4),
+ ('margin-sz-financing','margin','MARGIN-SZ-FINANCING','financing','亿元','深市融资余额',5),
+ ('margin-sz-securities','margin','MARGIN-SZ-SECURITIES','securities','亿元','深市融券余额',6),
+ ('margin-sz-total','margin','MARGIN-SZ-TOTAL','total','亿元','深市两融余额',7),
+ ('margin-sz-buying','margin','MARGIN-SZ-BUYING','buying','亿元','深市融资买入额',8),
+ ('margin-maintenance','margin','MARGIN-MAINTENANCE','maintenance','%','平均维持担保比例(全市场)',9),
+ ('margin-collateral','margin','MARGIN-COLLATERAL','collateral','亿元','两融担保物总价值(全市场)',10),
+ ('margin-investors','margin','MARGIN-INVESTORS','investors','万人','参与交易投资者数(全市场)',11);

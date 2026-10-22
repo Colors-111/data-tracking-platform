@@ -19,8 +19,8 @@ def test_wal_mode(conn):
 
 def test_seed_loaded(conn):
     # 8 原有源 - cu-inventory（并入铜组后删除独立源行）+ 4 商品组源
-    # + sse50/zz1000 扩容 + v1.3 etf-watchlist（自选跟踪）
-    assert conn.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"] == 14
+    # + sse50/zz1000 扩容 + v1.3 etf-watchlist（自选跟踪）+ v1.4 融资融券（margin）
+    assert conn.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"] == 15
     assert conn.execute(
         "SELECT COUNT(*) c FROM sources WHERE id='cu-inventory'"
     ).fetchone()["c"] == 0   # 独立源行删除：执行器不再单独跑它
@@ -131,7 +131,7 @@ def test_unit_migration_on_legacy_db(tmp_path):
     row = c.execute(
         "SELECT source_id, unit FROM instruments WHERE id='cu-inventory'").fetchone()
     assert (row["source_id"], row["unit"]) == ("copper", "吨")
-    assert c.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"] == 14
+    assert c.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"] == 15
     c.close()
 
 
@@ -154,7 +154,7 @@ def test_observation_fk_enforced(conn):
 
 def test_init_db_idempotent(conn):
     db.init_db(conn)
-    assert conn.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"] == 14
+    assert conn.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"] == 15
 
 
 def test_seed_backfill_from_snapshots(conn):
@@ -191,3 +191,25 @@ def test_seed_backfill_from_snapshots(conn):
     before = conn.execute("SELECT COUNT(*) c FROM observations").fetchone()["c"]
     conn.executescript(sql)
     assert conn.execute("SELECT COUNT(*) c FROM observations").fetchone()["c"] == before
+
+
+def test_margin_source_seeded(conn):
+    # v1.4 融资融券（设计 §5.4）：8 沪深余额类 + 3 全市场杠杆状况类，
+    # 新分组「市场资金」驱动侧边栏自动出现；混合单位由 instrument 级 unit 承载
+    src = conn.execute(
+        "SELECT name, group_name, fetcher, unit, movement_th, lag_days"
+        " FROM sources WHERE id='margin'").fetchone()
+    assert src["name"] == "融资融券"
+    assert src["group_name"] == "市场资金"
+    assert src["fetcher"] == "akshare.margin"
+    assert src["unit"] == "混合" and src["movement_th"] == 100.0 and src["lag_days"] == 1
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM instruments WHERE source_id='margin'"
+    ).fetchone()["c"] == 11
+    codes = {r["id"]: (r["code"], r["metric"], r["unit"]) for r in conn.execute(
+        "SELECT id, code, metric, unit FROM instruments WHERE source_id='margin'")}
+    assert codes["margin-sh-financing"] == ("MARGIN-SH-FINANCING", "financing", "亿元")
+    assert codes["margin-sz-buying"] == ("MARGIN-SZ-BUYING", "buying", "亿元")
+    assert codes["margin-maintenance"] == ("MARGIN-MAINTENANCE", "maintenance", "%")
+    assert codes["margin-collateral"] == ("MARGIN-COLLATERAL", "collateral", "亿元")
+    assert codes["margin-investors"] == ("MARGIN-INVESTORS", "investors", "万人")
