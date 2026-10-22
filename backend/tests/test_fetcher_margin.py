@@ -10,7 +10,7 @@ from backend.fetchers.base import build_fetcher
 
 FIX = Path(__file__).parent / "fixtures"
 
-# fixture 最新日期（录制日 2026-10-21 附近）；校验节流测试用它注入确定"今天"
+# 取 fixture 倒数第二行（2026-10-20），保证有完整交易日；校验节流测试用它注入确定"今天"
 FIX_LATEST = "2026-10-20"
 
 
@@ -56,6 +56,13 @@ def test_lg_produces_yi(margin_env):
     assert sh_fin and 12000 < sh_fin[0] < 13500        # 亿元量级（2026-10 实测）
     assert ("margin-sz-financing", FIX_LATEST) in by   # 深市同日也在
 
+    def val(iid):
+        return next(v for (i, d), v in by.items() if i == iid and d == FIX_LATEST)
+
+    # 两融余额 == 融资余额 + 融券余额（fixture 精确成立，防列映射错位）
+    assert abs(val("margin-sh-total") - val("margin-sh-financing")
+               - val("margin-sh-securities")) < 1e-6
+
 
 def test_full_history_ignores_trade_date(margin_env):
     # 全历史型契约：fetch 忽略 trade_date 全量返回（backfill 首日全量入库的门）
@@ -71,7 +78,49 @@ def test_branch_isolation(margin_env, monkeypatch, caplog):
     obs = margin_env.fetch(FIX_LATEST)
     iids = {o.instrument_id for o in obs}
     assert "margin-sz-financing" in iids and "margin-sh-financing" not in iids
+    assert "margin-maintenance" in iids          # 账户分支不受 SH 断连影响
     assert "lg_sh" in caplog.text
+
+
+def test_missing_value_column_raises(margin_env, monkeypatch):
+    # 值列改名 → ValueError（run_branches 不隔离，整源 failed 可见）
+    import backend.fetchers.akshare_margin as mod
+    df = pd.read_json(FIX / "margin_lg_sh.json").drop(columns=["融券余额"])
+    monkeypatch.setattr(mod.ak, "macro_china_market_margin_sh", lambda: df)
+    with pytest.raises(ValueError, match="margin-sh-securities"):
+        margin_env.fetch(FIX_LATEST)
+
+
+def test_empty_upstream_returns_empty(margin_env, monkeypatch):
+    import backend.fetchers.akshare_margin as mod
+    monkeypatch.setattr(mod.ak, "macro_china_market_margin_sh", lambda: pd.DataFrame())
+    monkeypatch.setattr(mod.ak, "macro_china_market_margin_sz", lambda: pd.DataFrame())
+    monkeypatch.setattr(mod.ak, "stock_margin_account_info", lambda: pd.DataFrame())
+    # 三分支各自成功后 obs 空——run_branches 不抛（失败≠空），返回 []
+    assert margin_env.fetch(FIX_LATEST) == []
+
+
+def test_only_configured_branches_count(conn, monkeypatch):
+    # 仅账户分支配置 + 账户挂 → RuntimeError（空分支不占分母）
+    src = conn.execute("SELECT * FROM sources WHERE id='margin'").fetchone()
+    insts = [{"id": "margin-maintenance", "code": "MARGIN-MAINTENANCE"}]
+    import backend.fetchers.akshare_margin as mod
+    monkeypatch.setattr(mod.ak, "stock_margin_account_info", _raise("down"))
+    F = build_fetcher(src["fetcher"], src, insts)
+    with pytest.raises(RuntimeError, match="全部分支失败"):
+        F.fetch(FIX_LATEST)
+
+
+def test_duplicate_code_fails_loud(conn):
+    # 同一后缀重复注册 → 构建期 ValueError（防 seed 拼重复静默覆盖）
+    src = conn.execute("SELECT * FROM sources WHERE id='margin'").fetchone()
+    insts = [
+        {"id": "margin-maintenance", "code": "MARGIN-MAINTENANCE"},
+        {"id": "margin-maintenance-dup", "code": "MARGIN-MAINTENANCE"},
+    ]
+    from backend.fetchers.akshare_margin import MarginFetcher
+    with pytest.raises(ValueError, match="重复"):
+        MarginFetcher(src, insts)
 
 
 def test_all_branches_fail_reraises(margin_env, monkeypatch):

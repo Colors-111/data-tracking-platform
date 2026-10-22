@@ -59,8 +59,12 @@ class MarginFetcher:
             parts = code.split("-")        # MARGIN-{SH|SZ}-{后缀} / MARGIN-{后缀}
             if len(parts) == 3 and parts[0] == "MARGIN" and parts[1] in ("SH", "SZ") \
                     and parts[2] in LG_META:
+                if parts[2] in self._lg[parts[1]]:
+                    raise ValueError(f"margin 仪器代码重复: {code}")
                 self._lg[parts[1]][parts[2]] = i["id"]
             elif len(parts) == 2 and parts[0] == "MARGIN" and parts[1] in ACCT_META:
+                if parts[1] in self._acct:
+                    raise ValueError(f"margin 仪器代码重复: {code}")
                 self._acct[parts[1]] = i["id"]
             else:
                 raise ValueError(
@@ -69,11 +73,13 @@ class MarginFetcher:
                     f"{{MAINTENANCE|COLLATERAL|INVESTORS}}）")
 
     def fetch(self, trade_date: str) -> list[Observation]:
-        branches = [
-            ("lg_sh", partial(self._fetch_lg, "SH", self._lg["SH"])),
-            ("lg_sz", partial(self._fetch_lg, "SZ", self._lg["SZ"])),
-            ("account", partial(self._fetch_account, self._acct)),
-        ]
+        branches = []
+        if self._lg["SH"]:
+            branches.append(("lg_sh", partial(self._fetch_lg, "SH", self._lg["SH"])))
+        if self._lg["SZ"]:
+            branches.append(("lg_sz", partial(self._fetch_lg, "SZ", self._lg["SZ"])))
+        if self._acct:
+            branches.append(("account", partial(self._fetch_account, self._acct)))
         obs = run_branches(log, "margin", branches)
         self._cross_check(trade_date, obs)
         return obs
@@ -95,15 +101,18 @@ class MarginFetcher:
         if df is None or df.empty:
             return []
         c_d = col(df, ["日期"], "日期")
+        resolved = []
+        for sfx, iid in targets.items():
+            cname, div, metric = meta[sfx]
+            resolved.append((iid, col(df, [cname], f"{iid} 值"), div, metric))
         out = []
         for _, r in df.iterrows():
             d = normalize_date(r[c_d])
             if d is None:
                 continue
-            for sfx, iid in targets.items():
-                cname, div, metric = meta[sfx]
-                v = r.get(cname)
-                if v is not None and not pd.isna(v):
+            for iid, c_v, div, metric in resolved:
+                v = r[c_v]
+                if not pd.isna(v):
                     out.append(Observation(iid, metric, d, float(v) / div))
         return out
 
