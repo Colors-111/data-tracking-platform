@@ -143,7 +143,7 @@ def test_account_units(margin_env):
     obs = margin_env.fetch(FIX_LATEST)
     by = {(o.instrument_id, o.trade_date): o.value for o in obs}
     assert 100 < by[("margin-maintenance", FIX_LATEST)] < 500        # % 量级
-    assert 1e0 < by[("margin-investors", FIX_LATEST)] < 1e3          # 万人
+    assert 5 < by[("margin-investors", FIX_LATEST)] < 100            # 万人（fixture 历史 7.35–76.16）
     assert 1e4 < by[("margin-collateral", FIX_LATEST)] < 2e5         # 亿元
     # 锁 (iid, metric) 对应关系——collateral/investors 写反也能抓到
     pairs = {(o.instrument_id, o.metric) for o in obs
