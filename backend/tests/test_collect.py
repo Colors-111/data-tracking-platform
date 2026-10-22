@@ -318,3 +318,111 @@ def test_run_source_same_day_completeness_guard(conn, fake_source):
     assert conn.execute(
         "SELECT COUNT(*) c FROM observations WHERE trade_date='2026-10-16'"
     ).fetchone()["c"] == 3
+
+
+def test_run_source_same_day_full_history_no_target_is_empty(conn, fake_source):
+    # 全历史型源：返回 4 万行历史但不含目标日（当日尚未发布）→ empty（非 stale），
+    # 且不得写入目标日行；大量历史行不参与"当日完整性"判断
+    import datetime as dt
+
+    @register("fake.fullhistory")
+    class FH:
+        source_id = "fake"; lag_days = 1; history_fetch = True
+        def __init__(self, source, instruments): pass
+        def fetch(self, trade_date):
+            t = dt.date.fromisoformat(trade_date)
+            return [Observation("f1", "price",
+                                (t - dt.timedelta(days=i)).isoformat(), 1.0)
+                    for i in range(1, 40001)]   # 不含 target
+
+    conn.execute("UPDATE sources SET fetcher='fake.fullhistory' WHERE id='fake'"); conn.commit()
+    src = conn.execute("SELECT * FROM sources WHERE id='fake'").fetchone()
+    insts = conn.execute("SELECT * FROM instruments WHERE source_id='fake'").fetchall()
+    r = C.run_source(conn, src, insts, "2026-10-16", same_day=True)
+    assert r["status"] == "empty" and r["covered"] is False
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM observations WHERE trade_date='2026-10-16'"
+    ).fetchone()["c"] == 0
+
+
+def _add_instruments(conn, n):
+    for i in range(2, n + 1):
+        conn.execute("INSERT OR REPLACE INTO instruments"
+                     "(id,source_id,code,metric,name,sort_order) VALUES(?, 'fake', ?, 'price', ?, ?)",
+                     (f"f{i}", f"F{i}", f"假{i}", i))
+
+
+def test_run_source_same_day_full_history_complete_target_ok(conn, fake_source):
+    # 全历史型源：含目标日且当日行数与前一交易日相当 → ok，目标日正常落库
+    _add_instruments(conn, 4)
+    for i in range(1, 5):
+        conn.execute("INSERT INTO observations VALUES"
+                     f"('f{i}','price','2026-10-15',1.0,NULL,'2026-10-15T17:00:00')")
+    conn.commit()
+
+    @register("fake.fullhistory.ok")
+    class FH:
+        source_id = "fake"; lag_days = 1; history_fetch = True
+        def __init__(self, source, instruments): pass
+        def fetch(self, trade_date):
+            return ([Observation(f"f{i}", "price", "2026-10-14", 1.0) for i in range(1, 5)]
+                    + [Observation(f"f{i}", "price", "2026-10-15", 1.0) for i in range(1, 5)]
+                    + [Observation(f"f{i}", "price", trade_date, 2.0) for i in range(1, 5)])
+
+    conn.execute("UPDATE sources SET fetcher='fake.fullhistory.ok' WHERE id='fake'"); conn.commit()
+    src = conn.execute("SELECT * FROM sources WHERE id='fake'").fetchone()
+    insts = conn.execute("SELECT * FROM instruments WHERE source_id='fake'").fetchall()
+    r = C.run_source(conn, src, insts, "2026-10-16", same_day=True)
+    assert r["status"] == "ok" and r["covered"] is True
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM observations WHERE trade_date='2026-10-16'"
+    ).fetchone()["c"] == 4
+
+
+def test_run_source_same_day_full_history_partial_target_discarded(conn, fake_source):
+    # 全历史型源：按【目标日行数】与前一交易日比较——当日仅 1/4 行（<50%）→
+    # 丢弃不落库（不能因总行数 4 万而放过残缺当日）
+    _add_instruments(conn, 4)
+    for i in range(1, 5):
+        conn.execute("INSERT INTO observations VALUES"
+                     f"('f{i}','price','2026-10-15',1.0,NULL,'2026-10-15T17:00:00')")
+    conn.commit()
+
+    @register("fake.fullhistory.partial")
+    class FH:
+        source_id = "fake"; lag_days = 1; history_fetch = True
+        def __init__(self, source, instruments): pass
+        def fetch(self, trade_date):
+            return ([Observation(f"f{i}", "price", "2026-10-14", 1.0) for i in range(1, 5)]
+                    + [Observation("f1", "price", trade_date, 2.0)])   # 当日仅 1 行
+
+    conn.execute("UPDATE sources SET fetcher='fake.fullhistory.partial' WHERE id='fake'")
+    conn.commit()
+    src = conn.execute("SELECT * FROM sources WHERE id='fake'").fetchone()
+    insts = conn.execute("SELECT * FROM instruments WHERE source_id='fake'").fetchall()
+    r = C.run_source(conn, src, insts, "2026-10-16", same_day=True)
+    assert r["status"] == "empty" and r["rows"] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM observations WHERE trade_date='2026-10-16'"
+    ).fetchone()["c"] == 0
+
+
+def test_backfill_history_fetch_stops_with_distinct_log(conn, fake_source, monkeypatch, caplog):
+    # 全历史型源早停日志与窗口型区分：首抓已全量覆盖（非窗口型）
+    monkeypatch.setattr(C, "connect", lambda: conn)
+    monkeypatch.setattr(C, "trade_dates_from_to",
+                        lambda a, b: ["2026-01-05", "2026-01-06", "2026-01-07"])
+    caplog.set_level("INFO")
+
+    @register("fake.history")
+    class H:
+        source_id = "fake"; lag_days = 1; history_fetch = True
+        def __init__(self, source, instruments): pass
+        def fetch(self, trade_date):
+            return [Observation("f1", "price", "2026-01-06", 42.0)]   # 全量但不含目标日
+
+    conn.execute("UPDATE sources SET fetcher='fake.history' WHERE id='fake'"); conn.commit()
+    assert C.main(["--backfill", "--from", "2026-01-05", "--to", "2026-01-07",
+                   "--source", "fake"]) == 0
+    assert "全历史型源：首抓已全量覆盖" in caplog.text
+    assert "窗口型（fetch 不含目标日" not in caplog.text

@@ -102,7 +102,10 @@ def run_source(conn, source, instruments, run_date: str, same_day: bool = False)
         else:
             target = previous_trade_date(run_date, fetcher.lag_days)
         obs = fetch_with_retry(fetcher, target)
-        if same_day and obs:
+        # 目标日行数（而非 fetch 总行数）：全历史型源一次返回数万行历史，
+        # 用总行数与前一交易日比会永不触发完整性保险
+        today_cnt = sum(1 for o in obs if o.trade_date == target)
+        if same_day and today_cnt:
             # 完整性保险：当日行数 < 前一交易日 50% 视为"未公布齐"——不落库，
             # 该日保持未覆盖，次日 09:00 档 lag=1 的目标日正是它，自动补齐（自愈闭环）
             prev_d = previous_trade_date(target, 1)
@@ -111,18 +114,21 @@ def run_source(conn, source, instruments, run_date: str, same_day: bool = False)
                      JOIN instruments i ON i.id=o.instrument_id
                     WHERE i.source_id=? AND o.trade_date=?""",
                 (source["id"], prev_d)).fetchone()["c"]
-            if prev_cnt and len(obs) < prev_cnt * 0.5:
+            if prev_cnt and today_cnt < prev_cnt * 0.5:
                 log.warning("源 %s 当日(%s)数据疑未公布齐：%d 行 < 前一交易日(%s) %d 行的"
                             "50%%，丢弃不落库（次日 09:00 档自动补齐）",
-                            source["id"], target, len(obs), prev_d, prev_cnt)
-                obs = []
+                            source["id"], target, today_cnt, prev_d, prev_cnt)
+                obs, today_cnt = [], 0
         upsert_observations(conn, obs, started)
         result["rows"] = len(obs)
         result["target_date"] = target
         # fetch 是否真的覆盖了目标日：精确日期源成功时恒 True；
-        # 窗口型源（如库存，fetch 返回近期整段）取历史目标时 False——backfill 据此提前止损
-        result["covered"] = any(o.trade_date == target for o in obs)
-        if not obs:
+        # 窗口型/全历史型源（fetch 返回整段）取历史目标时可能 False——backfill 据此提前止损
+        result["covered"] = today_cnt > 0
+        if not obs or (same_day and not today_cnt):
+            # same_day 档目标日无行 = "今天还没出"，属 empty（次日 09:00 档补齐），
+            # 不是 stale：全历史型源会返回大量历史行，按 source_max_date 判会把
+            # "当日未更新"误报为 stale
             result["status"] = "empty"
         elif (m := source_max_date(conn, source["id"])) and m < target:
             result["status"] = "stale"
@@ -266,9 +272,10 @@ def main(argv=None):
                 (s["id"],)).fetchall()
             # lag 从 fetcher 取（未注册 fetcher 的源 run_source 会正常标 failed，lag 用配置值兜底）
             try:
-                lag = build_fetcher(s["fetcher"], s, insts).lag_days
+                fetcher = build_fetcher(s["fetcher"], s, insts)
+                lag = fetcher.lag_days
             except KeyError:
-                lag = s["lag_days"]
+                fetcher, lag = None, s["lag_days"]
             for d in dates:
                 # 按【目标日】判覆盖：库里已有该源目标日的数据才跳过——
                 # 支持在已有较新日常数据时向前补历史（旧规则 d<=max 会把历史全部误跳）。
@@ -290,9 +297,14 @@ def main(argv=None):
                         and (h := source_max_date(conn, s["id"]))
                         and h > r["target_date"]):
                     # 窗口型源：fetch 返回非空行但不含目标日（只覆盖近期），向更早回补不会再有产出。
+                    # 全历史型源（history_fetch）首抓即已全量覆盖，同样停止空转，但措辞区分。
                     # 0 行（上市前空日）不算——否则并发日更跳高 source_max_date 会把空日误判成窗口型
-                    log.info("源 %s 为窗口型（fetch 不含目标日，仅覆盖近期），停止向更早回补",
-                             s["id"])
+                    if getattr(fetcher, "history_fetch", False):
+                        log.info("源 %s 为全历史型源：首抓已全量覆盖，停止空转（非窗口型）",
+                                 s["id"])
+                    else:
+                        log.info("源 %s 为窗口型（fetch 不含目标日，仅覆盖近期），停止向更早回补",
+                                 s["id"])
                     break
         if failed:
             log.error("回补存在失败源/日期：%s（修复后重跑 --backfill 即续传）", failed)

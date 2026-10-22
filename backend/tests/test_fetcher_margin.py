@@ -288,3 +288,55 @@ def test_cross_check_szse_mismatch_warns(margin_env, monkeypatch, caplog):
     monkeypatch.setattr(mod.ak, "stock_margin_sse", _raise("SSE net down"))
     margin_env.fetch(FIX_LATEST)
     assert "不一致" in caplog.text and "SZ" in caplog.text
+
+
+def test_cross_check_sse_uses_common_latest_date(margin_env, monkeypatch, caplog):
+    # SSE 滞后：目标日（2026-10-22）无数据，但回看窗口内共同最新日 2026-10-21
+    # 存在 → 用该日比对（否则近期档位永远"尚无数据"静默）；偏差 2% → warning 带比对日
+    import backend.fetchers.akshare_margin as mod
+    common = "2026-10-21"
+    src = pd.read_json(FIX / "margin_lg_sh.json").iloc[-1]
+
+    def f(c):
+        return src[c] * 1.02 if c == "融资余额" else src[c]
+
+    monkeypatch.setattr(
+        mod.ak, "stock_margin_sse",
+        lambda start_date, end_date: _sse_df(
+            common, f("融资余额"), f("融资融券余额"),
+            securities=f("融券余额"), buying=f("融资买入额")))
+    margin_env.fetch("2026-10-22")   # 目标日不在 fixture/SSE 返回中
+    assert "不一致" in caplog.text and common in caplog.text
+
+
+def test_cross_check_sse_common_latest_within_tolerance(margin_env, monkeypatch, caplog):
+    # 同上走共同最新日，但偏差 0.1%（容差内）→ 无 warning
+    import backend.fetchers.akshare_margin as mod
+    common = "2026-10-21"
+    src = pd.read_json(FIX / "margin_lg_sh.json").iloc[-1]
+
+    def f(c):
+        return src[c] * 1.001
+
+    monkeypatch.setattr(
+        mod.ak, "stock_margin_sse",
+        lambda start_date, end_date: _sse_df(
+            common, f("融资余额"), f("融资融券余额"),
+            securities=f("融券余额"), buying=f("融资买入额")))
+    margin_env.fetch("2026-10-22")
+    assert "不一致" not in caplog.text
+
+
+def test_cross_check_szse_wrong_date_silent(margin_env, monkeypatch, caplog):
+    # SZSE 单日接口回落返回前一交易日行：日期 ≠ target → 视为"尚无数据"静默，
+    # 不得拿别的日子的值报"不一致"
+    import backend.fetchers.akshare_margin as mod
+    caplog.set_level(logging.INFO)
+    df = pd.DataFrame([{"信用交易日期": "20261019",   # target=FIX_LATEST(2026-10-20)
+                        "融资余额": 1.0, "融券余额": 1.0,
+                        "融资融券余额": 2.0, "融资买入额": 0.1}])
+    monkeypatch.setattr(mod.ak, "stock_margin_szse", lambda date: df)
+    monkeypatch.setattr(mod.ak, "stock_margin_sse", _raise("SSE net down"))
+    margin_env.fetch(FIX_LATEST)
+    assert "不一致" not in caplog.text
+    assert "SZSE 尚无 2026-10-20 数据" in caplog.text
