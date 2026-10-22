@@ -122,6 +122,7 @@ class MarginFetcher:
     SZ_COLS = {"financing": "融资余额", "securities": "融券余额",
                "total": "融资融券余额", "buying": "融资买入额"}
     CHECK_TOLERANCE = 0.005
+    # 兼作节流阈值与 SSE 回看窗口（有意合并：窗口 > 节流期则近期目标日永不缺数据）
     CHECK_RECENT_DAYS = 30
     YI = 1e8   # 直连元 → 入库亿元
 
@@ -136,13 +137,17 @@ class MarginFetcher:
             return
         if (_today() - target).days > self.CHECK_RECENT_DAYS:
             return
-        # 只取目标日当天的沪深产出（fetch 全历史返回，远古行不参与）
+        # 只取目标日当天的沪深产出（fetch 全历史返回，远古行不参与）；
+        # 复用 self._lg 映射，免去从 instrument_id 二次解析
+        val = {(o.instrument_id, o.trade_date): o.value for o in obs}
         mine = {}
-        for o in obs:
-            if o.trade_date == trade_date:
-                parts = o.instrument_id.split("-")   # margin-sh-financing
-                if len(parts) == 3 and parts[1] in ("sh", "sz"):
-                    mine[(parts[1].upper(), o.metric)] = o.value
+        for exch, targets in self._lg.items():
+            for sfx, iid in targets.items():
+                v = val.get((iid, trade_date))
+                if v is not None:
+                    mine[(exch, LG_META[sfx][2])] = v
+        if not mine:          # 沪深均未配置/无当日产出 → 无可比对
+            return
         self._check_sse(trade_date, mine)
         self._check_szse(trade_date, mine)
 
@@ -152,17 +157,21 @@ class MarginFetcher:
                      - dt.timedelta(days=self.CHECK_RECENT_DAYS)).strftime("%Y%m%d")
             df = ak.stock_margin_sse(start_date=start,
                                      end_date=trade_date.replace("-", ""))
-            row = None
-            if df is not None and not df.empty:
-                c_d = col(df, ["信用交易日期"], "日期")
-                row = next((r for _, r in df.iterrows()
-                            if normalize_date(r[c_d]) == trade_date), None)
+        except Exception as e:    # 断连/限流/上游解析异常（如空数据 ValueError）→ 辅助通道静默
+            log.info("两融校验跳过（SSE 直连失败）: %s", e)
+            return
+        if df is None or df.empty:
+            log.info("两融校验跳过（SSE 尚无 %s 数据）", trade_date)
+            return
+        try:                      # 只有我们自己的契约校验才算结构变更
+            c_d = col(df, ["信用交易日期"], "日期")
+            for cname in self.SSE_COLS.values():
+                col(df, [cname], cname)
         except ValueError as e:   # 列结构变更必须可见（否则永久失去校验能力无人知）
             log.warning("两融校验通道结构变更（SSE）: %s", e)
             return
-        except Exception as e:    # 直连断连/限流——校验是辅助功能，静默跳过
-            log.info("两融校验跳过（SSE 直连失败）: %s", e)
-            return
+        row = next((r for _, r in df.iterrows()
+                    if normalize_date(r[c_d]) == trade_date), None)
         if row is None:
             log.info("两融校验跳过（SSE 尚无 %s 数据）", trade_date)
             return
@@ -171,16 +180,19 @@ class MarginFetcher:
     def _check_szse(self, trade_date: str, mine: dict) -> None:
         try:
             df = ak.stock_margin_szse(date=trade_date.replace("-", ""))
-            row = None if df is None or df.empty else df.iloc[0]
+        except Exception as e:    # 同上：上游异常静默
+            log.info("两融校验跳过（SZSE 直连失败）: %s", e)
+            return
+        if df is None or df.empty:
+            log.info("两融校验跳过（SZSE 尚无 %s 数据）", trade_date)
+            return
+        try:                      # 自有契约校验（列缺失才是结构变更）
+            for cname in self.SZ_COLS.values():
+                col(df, [cname], cname)
         except ValueError as e:
             log.warning("两融校验通道结构变更（SZSE）: %s", e)
             return
-        except Exception as e:
-            log.info("两融校验跳过（SZSE 直连失败）: %s", e)
-            return
-        if row is None:
-            log.info("两融校验跳过（SZSE 尚无 %s 数据）", trade_date)
-            return
+        row = df.iloc[0]
         self._compare("SZ", self.SZ_COLS, row, mine, trade_date)
 
     def _compare(self, exch: str, cols: dict, row, mine: dict,
@@ -188,12 +200,15 @@ class MarginFetcher:
         """逐指标比对：mine 为入库亿元，直连为元 → 统一换算亿元后算相对差。"""
         for metric, cname in cols.items():
             base = mine.get((exch, metric))
-            theirs = row.get(cname) if hasattr(row, "get") else None
+            theirs = row.get(cname)
             if base is None or theirs is None or pd.isna(theirs):
                 continue
-            theirs_yi = float(theirs) / self.YI
-            if base == 0:
-                continue                      # 零基数无法算相对差（早期数据）
+            try:
+                theirs_yi = float(theirs) / self.YI
+            except (TypeError, ValueError):   # 脏值：辅助校验不拖垮主采集
+                continue
+            if base == 0:   # 节流窗口内不可达（近期余额非零），仅防御
+                continue
             if abs(theirs_yi - base) / abs(base) > self.CHECK_TOLERANCE:
                 log.warning("两融交叉校验不一致: %s %s %s 乐咕=%.2f 交易所=%.2f",
                             exch, trade_date, metric, base, theirs_yi)

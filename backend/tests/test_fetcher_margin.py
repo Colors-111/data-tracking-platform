@@ -166,10 +166,12 @@ def test_account_early_nan_skipped(margin_env):
 
 # ---------- 交叉校验通道（Task 5） ----------
 # SSE 直连真实样本（2026-10-21 实测列与值；信用交易日期为 YYYYMMDD str）
-def _sse_df(date_str, financing, total, securities=1.9e10, buying=None):
+def _sse_df(date_str, financing, total, securities=None, buying=None):
     d8 = date_str.replace("-", "")
     if buying is None:
         buying = financing * 0.05
+    if securities is None:
+        securities = financing * 0.015
     return pd.DataFrame([{"信用交易日期": d8, "融资余额": financing,
                           "融资买入额": buying, "融券余量": 3.2e9,
                           "融券余量金额": securities, "融券卖出量": 6.9e7,
@@ -181,10 +183,15 @@ def test_cross_check_warns_on_mismatch(margin_env, monkeypatch, caplog):
     # 取 FIX_LATEST 当日行（iloc[-1] 是次日 2026-10-21，日期列对不上不参与比对）
     import backend.fetchers.akshare_margin as mod
     src = pd.read_json(FIX / "margin_lg_sh.json").iloc[-2]
+
+    def f(col):
+        return src[col] * 1.02 if col == "融资余额" else src[col]
+
     monkeypatch.setattr(
         mod.ak, "stock_margin_sse",
         lambda start_date, end_date: _sse_df(
-            FIX_LATEST, src["融资余额"] * 1.02, src["融资融券余额"]))
+            FIX_LATEST, f("融资余额"), f("融资融券余额"),
+            securities=f("融券余额"), buying=f("融资买入额")))
     margin_env.fetch(FIX_LATEST)
     assert "不一致" in caplog.text and "financing" in caplog.text
 
@@ -216,15 +223,20 @@ def test_cross_check_silent_on_direct_failure(margin_env, monkeypatch, caplog):
 def test_cross_check_skipped_for_old_dates(margin_env, monkeypatch):
     # 远古目标日（>30 日历日）→ 零直连调用（backfill 2010 起不逐日校验）
     import backend.fetchers.akshare_margin as mod
-    calls = []
+    calls, calls_sz = [], []
 
     def probe(start_date, end_date):
         calls.append(start_date)
         return _sse_df(FIX_LATEST, 1.0, 1.0)
 
+    def probe_sz(date):
+        calls_sz.append(date)
+        return pd.DataFrame([{"融资余额": 1.0}])
+
     monkeypatch.setattr(mod.ak, "stock_margin_sse", probe)
+    monkeypatch.setattr(mod.ak, "stock_margin_szse", probe_sz)
     margin_env.fetch("2020-01-02")
-    assert calls == []
+    assert calls == [] and calls_sz == []
 
 
 def test_cross_check_structure_change_warns(margin_env, monkeypatch, caplog):
@@ -235,3 +247,44 @@ def test_cross_check_structure_change_warns(margin_env, monkeypatch, caplog):
                         lambda start_date, end_date: pd.DataFrame([{"x": 1}]))
     margin_env.fetch(FIX_LATEST)
     assert "结构变更" in caplog.text
+
+
+def test_cross_check_silent_on_upstream_value_error(margin_env, monkeypatch, caplog):
+    # 交易所空数据时 akshare 内部抛 ValueError（Length mismatch）——上游异常
+    # 不等于我们自己的列契约变更，必须静默而非误报"结构变更"
+    import backend.fetchers.akshare_margin as mod
+    caplog.set_level(logging.INFO)
+    monkeypatch.setattr(mod.ak, "stock_margin_sse",
+                        lambda **k: (_ for _ in ()).throw(
+                            ValueError("Length mismatch: Expected axis has 0 elements")))
+    margin_env.fetch(FIX_LATEST)
+    assert "结构变更" not in caplog.text
+    assert "SSE 直连失败" in caplog.text
+
+
+def test_cross_check_szse_within_tolerance(margin_env, monkeypatch, caplog):
+    # 深交所正向比对：SZSE_COLS 映射（"融券余额"）与 /1e8 换算正确 → 无告警
+    import backend.fetchers.akshare_margin as mod
+    row = pd.read_json(FIX / "margin_lg_sz.json").iloc[-2]
+    df = pd.DataFrame([{"融资余额": row["融资余额"], "融券余额": row["融券余额"],
+                        "融资融券余额": row["融资融券余额"],
+                        "融资买入额": row["融资买入额"]}])
+    monkeypatch.setattr(mod.ak, "stock_margin_szse",
+                        lambda date: df)
+    monkeypatch.setattr(mod.ak, "stock_margin_sse", _raise("SSE net down"))
+    margin_env.fetch(FIX_LATEST)
+    assert "不一致" not in caplog.text
+
+
+def test_cross_check_szse_mismatch_warns(margin_env, monkeypatch, caplog):
+    # 深市融券余额偏 2% → 告警含 SZ（SZ 映射与 SSE 不同列名，最易写错处）
+    import backend.fetchers.akshare_margin as mod
+    row = pd.read_json(FIX / "margin_lg_sz.json").iloc[-2]
+    df = pd.DataFrame([{"融资余额": row["融资余额"],
+                        "融券余额": row["融券余额"] * 1.02,
+                        "融资融券余额": row["融资融券余额"],
+                        "融资买入额": row["融资买入额"]}])
+    monkeypatch.setattr(mod.ak, "stock_margin_szse", lambda date: df)
+    monkeypatch.setattr(mod.ak, "stock_margin_sse", _raise("SSE net down"))
+    margin_env.fetch(FIX_LATEST)
+    assert "不一致" in caplog.text and "SZ" in caplog.text
