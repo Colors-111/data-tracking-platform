@@ -9,8 +9,8 @@
 **Tech Stack:** Python 3.12 + akshare 1.19.x + SQLite；Vue3 + vitest。设计依据：`docs/superpowers/specs/2026-10-16-data-tracking-platform-design.md` §5.4。
 
 **实测数据契约（2026-10-21 录制，写代码前必读）：**
-- 乐咕 `macro_china_market_margin_sh/sz()`：列 `['日期','融资买入额','融资余额','融券卖出量','融券余量','融券余额','融资融券余额']`，日期 `YYYY-MM-DD` str，金额单位**元**（沪最新融资余额 ≈1.26e12），最新到当日晚间
-- `stock_margin_account_info()`：列 `['日期','融资余额','融券余额','融资买入额','融券卖出额','证券公司数量','营业部数量','个人投资者数量','机构投资者数量','参与交易的投资者数量','有融资融券负债的投资者数量','担保物总价值','平均维持担保比例']`，2012-09-27 起；**余额/担保物单位亿元、维持担保比例 %**；「个人投资者数量」单位万而「参与交易的投资者数量」单位**个**（本设计只用后者，÷1e4 → 万人）；担保物/投资者数 2015 年前后起有值，早期 NaN
+- 乐咕 `macro_china_market_margin_sh/sz()`：列 `['日期','融资买入额','融资余额','融券卖出量','融券余量','融券余额','融资融券余额']`，日期列 fixture 落盘为 epoch-ms int64（normalize_date epoch 分支归一，同 SPDR 先例）、生产为日期对象/str，金额单位**元**（沪最新融资余额 ≈1.26e12），最新到当日晚间
+- `stock_margin_account_info()`：列 `['日期','融资余额','融券余额','融资买入额','融券卖出额','证券公司数量','营业部数量','个人投资者数量','机构投资者数量','参与交易的投资者数量','有融资融券负债的投资者数量','担保物总价值','平均维持担保比例']`，2012-09-27 起；**余额/担保物单位亿元、维持担保比例 %**；「个人投资者数量」单位万而「参与交易的投资者数量」单位**个**（本设计只用后者，÷1e4 → 万人）；担保物/投资者数 2012-09-27→2015-04-22 为 NaN（首行 null，首个非 null 2015-04-23）
 - `stock_margin_sse(start_date, end_date)`（YYYYMMDD str）：列 `['信用交易日期','融资余额','融资买入额','融券余量','融券余量金额','融券卖出量','融资融券余额']`，日期 `YYYYMMDD` str（normalize_date 已支持 8 位数字串），单位元，「融券余量金额」即融券余额；时效滞后约 5 个交易日
 - `stock_margin_szse(date)`（YYYYMMDD str）：列 `['融资买入额','融资余额','融券卖出量','融券余量','融券余额','融资融券余额']`（akshare 源码固化），单位元；本环境深交所 Errno 101 断连频发（校验静默跳过即可）
 
@@ -53,7 +53,7 @@ Expected: 三行输出（沪 ≈4015 rows、深 ≈3817 rows、账户 ≈3410 ro
 - [ ] **Step 3: 抽查 fixture 内容**
 
 Run: `head -c 400 backend/tests/fixtures/margin_lg_sh.json`
-Expected: 含 `"日期"`（`YYYY-MM-DD` 字符串）与 `"融资余额"`（大数值，元）字段；`margin_account.json` 首行（2012-09-27）的 `担保物总价值`/`参与交易的投资者数量` 为 null（早期缺失，供 NaN 跳行测试）。
+Expected: 含 `"日期"` 与 `"融资余额"` 字段。⚠️ 实测（Task 1 交付）：`"日期"` 落盘为 **epoch-ms int64**（akshare 返回 datetime.date 对象、to_json 默认 date_format='epoch'），非 "YYYY-MM-DD" 字符串——`pd.read_json` 无参回读仍是 int64，必须经 `normalize_date` 归一（UTC 锚定 epoch-ms 分支，同 SPDR/macro fixture 先例，往返无损）。`margin_account.json` 首行（2012-09-27）的 `担保物总价值`/`参与交易的投资者数量` 为 null（早期缺失，供 NaN 跳行测试；首个非 null 在 2015-04-23）。
 
 - [ ] **Step 4: Commit**
 
