@@ -132,7 +132,7 @@ INSERT OR IGNORE INTO instruments(id,source_id,code,metric,name,sort_order) VALU
 -- （中证金融账户统计：担保比例 %、担保物 亿元、参与交易投资者数 个→万人）。
 -- 全历史一次拉取（回补 3 请求）；当日晚间更新当日 → 16:40 档 empty、次日 09:00 补。
 INSERT OR IGNORE INTO sources(id,name,group_name,freq,fetcher,unit,movement_th,lag_days,enabled,sort_order) VALUES
- ('margin','融资融券','市场资金','daily','akshare.margin','混合',100.0,1,1,40);
+ ('margin','融资融券','市场资金','daily','akshare.margin','混合',2.0,1,1,40);
 INSERT OR IGNORE INTO instruments(id,source_id,code,metric,unit,name,sort_order) VALUES
  ('margin-sh-financing','margin','MARGIN-SH-FINANCING','financing','亿元','沪市融资余额',1),
  ('margin-sh-securities','margin','MARGIN-SH-SECURITIES','securities','亿元','沪市融券余额',2),

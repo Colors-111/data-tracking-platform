@@ -202,7 +202,7 @@ def test_margin_source_seeded(conn):
     assert src["name"] == "融资融券"
     assert src["group_name"] == "市场资金"
     assert src["fetcher"] == "akshare.margin"
-    assert src["unit"] == "混合" and src["movement_th"] == 100.0 and src["lag_days"] == 1
+    assert src["unit"] == "混合" and src["movement_th"] == 2.0 and src["lag_days"] == 1
     assert conn.execute(
         "SELECT COUNT(*) c FROM instruments WHERE source_id='margin'"
     ).fetchone()["c"] == 11
