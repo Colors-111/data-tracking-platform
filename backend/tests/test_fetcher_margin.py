@@ -130,3 +130,32 @@ def test_all_branches_fail_reraises(margin_env, monkeypatch):
     monkeypatch.setattr(mod.ak, "stock_margin_account_info", _raise("c"))
     with pytest.raises(RuntimeError, match="全部分支失败"):
         margin_env.fetch(FIX_LATEST)
+
+
+def test_account_units(margin_env):
+    # 账户统计：担保比例 %/担保物 亿元原样、投资者数 个 → ÷1e4 万人
+    obs = margin_env.fetch(FIX_LATEST)
+    by = {(o.instrument_id, o.trade_date): o.value for o in obs}
+    (main,) = [v for (iid, d), v in by.items()
+               if iid == "margin-maintenance" and d == FIX_LATEST]
+    assert 130 < main < 400                     # % 量级（2026-10 实测 ≈256）
+    (inv,) = [v for (iid, d), v in by.items()
+              if iid == "margin-investors" and d == FIX_LATEST]
+    assert 10 < inv < 100                       # 万人（29.65 万实测量级）
+    (col_v,) = [v for (iid, d), v in by.items()
+                if iid == "margin-collateral" and d == FIX_LATEST]
+    assert 50000 < col_v < 100000               # 亿元（7.4 万亿 ≈ 74000 亿实测量级）
+    metrics = {o.metric for o in obs if o.instrument_id.startswith("margin-")
+               and not o.instrument_id[7:9] in ("sh", "sz")}
+    assert {"maintenance", "collateral", "investors"} <= metrics
+
+
+def test_account_early_nan_skipped(margin_env):
+    # 2012-09-27 首行：担保物/投资者数 NaN → 只产出 maintenance，不产 nan/崩
+    obs = margin_env.fetch(FIX_LATEST)
+    acct_ids = {"margin-maintenance", "margin-collateral", "margin-investors"}
+    first = [o for o in obs
+             if o.trade_date == "2012-09-27" and o.instrument_id in acct_ids]
+    iids = {o.instrument_id for o in first}
+    assert iids == {"margin-maintenance"}
+    assert all(o.value == o.value for o in first)   # 无 NaN 混入
