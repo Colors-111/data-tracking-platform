@@ -14,7 +14,8 @@
 docker compose --profile tools build
 
 # 3) 一条命令全起：web（API，http://<内网IP>:8000）+ scheduler（容器内置调度器：
-#    交易日 16:40 自动采集、启动/例行后自动补跑漏掉的交易日，无需宿主机 systemd/cron）
+#    交易日 09:00/16:40 两档自动采集（09:00 档次日上午即可见前一交易日 ETF 份额）、
+#    启动/例行后自动补跑漏掉的交易日，无需宿主机 systemd/cron）
 docker compose up -d
 
 # 4) 首次回补历史（默认全量：上交所份额自 2015-01-01，约 2500 个交易日，需 40 分钟量级；

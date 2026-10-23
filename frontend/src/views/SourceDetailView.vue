@@ -5,12 +5,21 @@ import JobStatus from "../components/JobStatus.vue";
 import CardRow from "../components/CardRow.vue";
 import TrendChart from "../components/TrendChart.vue";
 import CompareChips from "../components/CompareChips.vue";
+import { groupSections, groupCharts, isCommodityMeta } from "../metricSections.js";
+import { RANGES, validateRange, rangeParams } from "../ranges.js";
 
 const props = defineProps({ id: String });
-const RANGES = [["1m", "1月"], ["3m", "3月"], ["6m", "6月"], ["1y", "1年"], ["all", "全部"]];
 const detail = ref(null);
 const error = ref("");
 const range = ref("3m");
+// 自定义起止窗口：默认近 5 年（start=5 年前、end=今天）；仅 range='custom' 时参与请求，
+// 点"应用"校验通过后才触发 load（时间条切换仍由 watch 驱动）
+const localIso = (d) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const fiveYearsAgo = () => { const d = new Date(); d.setFullYear(d.getFullYear() - 5); return localIso(d); };
+const customStart = ref(fiveYearsAgo());
+const customEnd = ref(localIso(new Date()));
+const customError = ref("");
 const compareIds = ref([]);      // 添加对比的数据源 id 列表
 const compareSeries = ref([]);   // /api/series 返回（含 own + compare）
 const compareError = ref("");    // 对比序列加载失败：局部提示，不覆盖卡片数据
@@ -25,7 +34,9 @@ async function load() {
   detail.value = null; // 切换时立即清空，防旧源数据闪现（Task 14 审查 backlog）
   compareSeries.value = [];
   try {
-    const d = await api.sourceDetail(props.id, range.value);
+    // custom 模式以 start/end 请求（range 不传）；普通档位按 range——窗口来源对图表透明
+    const p = rangeParams(range.value, customStart.value, customEnd.value);
+    const d = await api.sourceDetail(props.id, p.range, p.start, p.end);
     if (my === seq) {
       detail.value = d;
       await loadCompare();
@@ -46,7 +57,9 @@ async function loadCompare() {
   }
   try {
     const allIds = [...ownIds, ...compareIds.value];
-    const res = await api.series(allIds, { normalize: normalize.value, range: range.value });
+    // 对比序列与本源同一窗口（custom 模式下 start/end 同步下发）
+    const p = rangeParams(range.value, customStart.value, customEnd.value);
+    const res = await api.series(allIds, { normalize: normalize.value, range: p.range, start: p.start, end: p.end });
     if (my === cseq) compareSeries.value = res.series;
   } catch (e) {
     if (my === cseq) {
@@ -64,6 +77,29 @@ watch(() => props.id, () => {
 });
 watch([compareIds, normalize], loadCompare);
 
+// 自定义窗口"应用"：前端校验（格式/顺序）通过才请求；错误就地提示、不动现有数据
+function applyCustom() {
+  const err = validateRange(customStart.value, customEnd.value);
+  customError.value = err ?? "";
+  if (!err) load();
+}
+
+// 对比源的 instrument_meta（iid→unit）：/api/series 不带单位，而商品对比源的
+// sources.unit='混合' 非真实量纲——逐对比源拉 sourceDetail 取逐 instrument 单位，
+// 供原值模式下对比线按单位落图（归一化合并图不依赖此数据）
+const compareMeta = ref({});
+let mseq = 0;
+watch(compareIds, async (ids) => {
+  const my = ++mseq; // 快速增删对比源时丢弃过期响应
+  if (!ids.length) {
+    compareMeta.value = {};
+    return;
+  }
+  const metas = await Promise.all(
+    ids.map(sid => api.sourceDetail(sid).then(d => d.instrument_meta ?? {}).catch(() => ({}))));
+  if (my === mseq) compareMeta.value = Object.assign({}, ...metas);
+});
+
 const nameOf = (iid) =>
   detail.value?.cards.find(c => c.instrument_id === iid)?.name ?? iid;
 // 统一序列模式：/api/series 数据就位时才生效；失败/未返回时回退 own 原值，
@@ -73,15 +109,116 @@ const useUnified = computed(() =>
 const chartSeries = computed(() => {
   if (useUnified.value)
     return compareSeries.value.map(s => ({ name: s.name, data: s.points }));
-  // 原值模式回退到 detail 自带序列
-  return Object.entries(detail.value?.series ?? {})
-    .map(([iid, pts]) => ({ name: nameOf(iid), data: pts }))
-    .filter(s => s.data.length); // 未回补的空 instrument 不进图例
+  // v1.3.x 类别总量两线置图例最前：全类总额（虚线，全市场口径）+ 已跟踪合计（点线），
+  // 差值即未跟踪部分。仅原值模式叠加——统一序列（对比/归一化）经 /api/series 算百分比，
+  // 特殊线未参与归一化，量纲不同不可同图；category/tracked 任一为空不渲染该线
+  const special = [];
+  if (detail.value?.category_total?.length)
+    special.push({ name: "全类总额", data: detail.value.category_total, lineType: "dashed" });
+  if (detail.value?.tracked_total?.length)
+    special.push({ name: "已跟踪合计", data: detail.value.tracked_total, lineType: "dotted" });
+  return [
+    ...special,
+    ...Object.entries(detail.value?.series ?? {})
+      .map(([iid, pts]) => ({ name: nameOf(iid), data: pts }))
+      .filter(s => s.data.length), // 未回补的空 instrument 不进图例
+  ];
 });
+
+// v1.2 商品组源分区：share-only 源（ETF）走旧单区布局，商品源按指标分区渲染
+const isCommodity = computed(() => isCommodityMeta(detail.value?.instrument_meta));
+const sections = computed(() => groupSections(detail.value?.instrument_meta ?? {}));
+// 对比线落点：只叠加在价格区图表（对比本就为跨源归一化，被比源多为 share/混合单位源、
+// 其 metric 不属于本页分区）；无价格区的极端情况回退首个分区
+const compareSectionKey = computed(() => {
+  const keys = sections.value.map(s => s.key);
+  return keys.includes("price") ? "price" : keys[0] ?? null;
+});
+
+const cardsOf = (sec) =>
+  detail.value.cards.filter(c => sec.iids.includes(c.instrument_id));
+
+// 合并图（归一化模式）序列：统一序列按 instrument_id 归区（own 落各自分区、
+// compare 落对比区），归一化后单位消失、区内所有线一张图（Y 轴 %）
+function seriesOf(sec) {
+  if (useUnified.value) {
+    const ownMeta = detail.value.instrument_meta ?? {};
+    return compareSeries.value
+      .filter(s => sec.iids.includes(s.instrument_id)
+                   || (!(s.instrument_id in ownMeta) && sec.key === compareSectionKey.value))
+      .map(s => ({ name: s.name, data: s.points }));
+  }
+  return sec.iids
+    .filter(iid => detail.value.series[iid]?.length)
+    .map(iid => ({ name: nameOf(iid), data: detail.value.series[iid] }));
+}
+
+// 线的计价单位：own 线用本源 instrument_meta，对比线用对比源 instrument_meta；
+// 都取不到（对比源元数据在途/加载失败）归入"其他"组，不静默丢线
+function unitOfSeries(s) {
+  return (detail.value?.instrument_meta ?? {})[s.instrument_id]?.unit
+      ?? compareMeta.value[s.instrument_id]?.unit ?? "其他";
+}
+
+// 原值模式的图组：自有单位组（groupCharts，组序=区内单位首现序）+ 对比线单位
+// 并入同名组或追加新组（对比线只落对比区）
+function chartGroupsOf(sec) {
+  const ownMeta = detail.value.instrument_meta ?? {};
+  const groups = groupCharts(sec.iids, ownMeta);
+  if (!useUnified.value || sec.key !== compareSectionKey.value) return groups;
+  for (const s of compareSeries.value) {
+    if (s.instrument_id in ownMeta) continue;
+    const u = unitOfSeries(s);
+    if (!groups.some(g => g.unit === u)) groups.push({ unit: u, iids: [] });
+  }
+  return groups;
+}
+
+// 原值模式某图组的序列：有对比时（统一序列）own+compare 都取 compareSeries 原值
+// 按单位落组；无对比时回退 detail.series（空序列不进图例）
+function seriesOfGroup(sec, g) {
+  if (useUnified.value) {
+    const ownMeta = detail.value.instrument_meta ?? {};
+    return compareSeries.value
+      .filter(s => unitOfSeries(s) === g.unit
+                   && (ownMeta[s.instrument_id]
+                       ? sec.iids.includes(s.instrument_id)
+                       : sec.key === compareSectionKey.value))
+      .map(s => ({ name: s.name, data: s.points }));
+  }
+  return g.iids
+    .filter(iid => detail.value.series[iid]?.length)
+    .map(iid => ({ name: nameOf(iid), data: detail.value.series[iid] }));
+}
+
+// 每分区渲染的图列表：
+//  - 归一化（统一序列生效）：区内合并一张图——归一化后单位消失可比，Y 轴 %；
+//  - 原值：按计价单位分图（图标题带单位，如"价格（元/克）"），
+//    对比线按各自单位落入对应子图
+const sectionCharts = computed(() => sections.value.map(sec => {
+  const charts = [];
+  if (useUnified.value && normalize.value === 1) {
+    const series = seriesOf(sec);
+    if (series.length)
+      charts.push({ key: "merged", title: "", unit: null, percent: true, series });
+  } else {
+    for (const g of chartGroupsOf(sec)) {
+      const series = seriesOfGroup(sec, g);
+      if (series.length)
+        charts.push({ key: g.unit, title: `${sec.label}（${g.unit}）`,
+                      unit: g.unit, percent: false, series });
+    }
+  }
+  return { ...sec, charts };
+}));
 
 // 量纲约束（Task 14 审查）：compare 引入不同 unit 的源时自动置归一化（用户可手动关回）
 function onAdded(payload) {
   if (payload?.unit && detail.value?.unit && payload.unit !== detail.value.unit) {
+    normalize.value = 1;
+  }
+  // 商品源 sources.unit='混合' 已非真实量纲，跨源对比必跨指标单位——一律归一化
+  if (isCommodity.value) {
     normalize.value = 1;
   }
 }
@@ -94,30 +231,70 @@ function onAdded(payload) {
     <div class="banner">
       {{ detail.name }}
       <span class="badge">{{ detail.cards.length }} 项 · 数据截至 {{ detail.as_of_date ?? "累积中" }}</span>
+      <!-- v1.3.x 覆盖率徽章（纯展示）：最新类别日已跟踪/全类合计，<90% 黄、≥90% 绿 -->
+      <span v-if="detail.coverage != null" class="coverage-badge"
+            :class="detail.coverage >= 90 ? 'ok' : 'warn'">覆盖该类 {{ detail.coverage }}%</span>
       <JobStatus />
     </div>
 
     <div class="range-bar">
       <button v-for="[k, label] in RANGES" :key="k" :class="{ active: range === k }" @click="range = k">{{ label }}</button>
     </div>
-
-    <CardRow :cards="detail.cards" :unit="detail.unit" />
-
-    <div class="compare-bar">
-      <CompareChips v-model="compareIds" :exclude-ids="[id]" @added="onAdded" />
-      <label class="norm-toggle">
-        <input type="checkbox" :checked="normalize === 1" @change="normalize = $event.target.checked ? 1 : 0">
-        归一化（期初=100）
-      </label>
-      <span v-if="compareError" class="compare-error">对比序列加载失败：{{ compareError }}</span>
+    <!-- 自定义起止：点击"自定义"即以当前起止（默认近 5 年）请求；调整后点"应用"重新拉取 -->
+    <div v-if="range === 'custom'" class="custom-bar">
+      <input type="date" v-model="customStart" aria-label="开始日期">
+      <span class="tilde">至</span>
+      <input type="date" v-model="customEnd" aria-label="结束日期">
+      <button class="apply-btn" @click="applyCustom">应用</button>
+      <span v-if="customError" class="custom-error">{{ customError }}</span>
     </div>
 
-    <div class="card" v-if="detail.as_of_date || (compareIds.length && chartSeries.length)">
-      <TrendChart :series="chartSeries" :percent="useUnified && normalize === 1"
-                  :unit="useUnified && normalize === 1 ? null : detail.unit"
-                  :update-options="{ notMerge: true }" />
-    </div>
-    <div class="card empty" v-else>数据累积中，暂无历史序列</div>
+    <!-- ETF 等全 share 源：单区旧布局（Task 14/17 契约不动） -->
+    <template v-if="!isCommodity">
+      <CardRow :cards="detail.cards" :unit="detail.unit" />
+
+      <div class="compare-bar">
+        <CompareChips v-model="compareIds" :exclude-ids="[id]" @added="onAdded" />
+        <label class="norm-toggle">
+          <input type="checkbox" :checked="normalize === 1" @change="normalize = $event.target.checked ? 1 : 0">
+          归一化（期初=100）
+        </label>
+        <span v-if="compareError" class="compare-error">对比序列加载失败：{{ compareError }}</span>
+      </div>
+
+      <div class="card" v-if="detail.as_of_date || (compareIds.length && chartSeries.length)">
+        <TrendChart :series="chartSeries" :percent="useUnified && normalize === 1"
+                    :unit="useUnified && normalize === 1 ? null : detail.unit"
+                    :update-options="{ notMerge: true }" />
+      </div>
+      <div class="card empty" v-else>数据累积中，暂无历史序列</div>
+    </template>
+
+    <!-- v1.2 商品组源：按指标分区；全页一个归一化开关作用于所有分区。
+         归一化：区内合并一张图（% 轴）；原值：按计价单位分图，对比线按各自单位落子图 -->
+    <template v-else>
+      <div class="compare-bar">
+        <CompareChips v-model="compareIds" :exclude-ids="[id]" @added="onAdded" />
+        <label class="norm-toggle">
+          <input type="checkbox" :checked="normalize === 1" @change="normalize = $event.target.checked ? 1 : 0">
+          归一化（期初=100）
+        </label>
+        <span v-if="compareError" class="compare-error">对比序列加载失败：{{ compareError }}</span>
+      </div>
+
+      <section v-for="sec in sectionCharts" :key="sec.key" class="metric-section">
+        <h3 class="section-title">{{ sec.label }}<span v-if="sec.note" class="section-note">{{ sec.note }}</span></h3>
+        <CardRow v-if="cardsOf(sec).length" :cards="cardsOf(sec)" :unit="detail.unit" use-card-unit />
+        <template v-if="sec.charts.length">
+          <div class="card" v-for="ch in sec.charts" :key="`${sec.key}:${ch.key}`">
+            <h4 v-if="ch.title" class="chart-title">{{ ch.title }}</h4>
+            <TrendChart :series="ch.series" :percent="ch.percent" :unit="ch.unit"
+                        :update-options="{ notMerge: true }" />
+          </div>
+        </template>
+        <div class="card empty" v-else>数据累积中</div>
+      </section>
+    </template>
   </div>
 </template>
 
@@ -125,8 +302,22 @@ function onAdded(payload) {
 .range-bar { margin: 12px 0 4px; display:flex; gap:6px; }
 .range-bar button { border:1px solid #ddd; background:#fff; border-radius:4px; padding:4px 12px; cursor:pointer; font-size:12px; }
 .range-bar button.active { background:#f0f3f6; color:#c0392b; font-weight:700; border-color:#c0392b; }
+.custom-bar { display:flex; align-items:center; gap:6px; margin:6px 0 4px; font-size:12px; color:#666; }
+.custom-bar input[type="date"] { border:1px solid #ddd; border-radius:4px; padding:3px 6px; font-size:12px; }
+.custom-bar .tilde { color:#999; }
+.custom-bar .apply-btn { border:1px solid #c0392b; background:#fff; color:#c0392b; border-radius:4px; padding:3px 12px; cursor:pointer; font-size:12px; }
+.custom-bar .apply-btn:hover { background:#c0392b; color:#fff; }
+.custom-error { color:#c0392b; }
 .compare-bar { display:flex; gap:14px; align-items:center; margin:10px 0; }
 .norm-toggle { font-size:12px; color:#666; }
 .compare-error { font-size:12px; color:#c0392b; }
 .empty { color:#999; text-align:center; padding:40px; }
+.metric-section { margin-top:6px; }
+.section-title { font-size:14px; color:#444; margin:12px 0 0; padding-left:8px; border-left:3px solid #c0392b; }
+.section-note { margin-left:8px; font-size:11px; color:#999; font-weight:400; }
+.chart-title { font-size:13px; color:#666; margin:0 0 2px; font-weight:600; }
+/* v1.3.x 覆盖率徽章：<90% 黄（提醒可继续补齐大 ETF）、≥90% 绿（达标） */
+.coverage-badge { font-size:11px; padding:1px 8px; border-radius:10px; margin-left:6px; }
+.coverage-badge.ok { background:#e8f6ee; color:#1e8449; border:1px solid #a9dfbf; }
+.coverage-badge.warn { background:#fdf6e3; color:#b7950b; border:1px solid #f7dc6f; }
 </style>

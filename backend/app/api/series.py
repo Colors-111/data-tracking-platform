@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Depends, Query
 
 from ..db import get_conn
+from ..validate import check_custom_window
 
 router = APIRouter()
-RANGE_DAYS = {"1m": 31, "3m": 92, "6m": 183, "1y": 366, "all": None}
+RANGE_DAYS = {"1m": 31, "3m": 92, "6m": 183, "1y": 366, "3y": 1096, "5y": 1827, "all": None}
 
 
 def _resolve_ids(conn, ids: list[str]) -> list[str]:
@@ -20,7 +21,10 @@ def _resolve_ids(conn, ids: list[str]) -> list[str]:
 
 @router.get("/api/series")
 def series(instruments: str = Query(""), normalize: int = 0,
-           range: str = Query("6m"), conn=Depends(get_conn)):
+           range: str = Query("6m"),
+           start: str = Query(None), end: str = Query(None),
+           conn=Depends(get_conn)):
+    check_custom_window(start, end)
     ids = _resolve_ids(conn, [i for i in instruments.split(",") if i])
     if not ids:
         return {"as_of_date": None, "series": []}
@@ -31,9 +35,22 @@ def series(instruments: str = Query(""), normalize: int = 0,
         ids).fetchone()["m"]
     if not as_of:
         return {"as_of_date": None, "series": []}
-    # 注意：as_of 源自上游外部数据（trade_date 的 MAX），必须绑参不得 f-string 拼接
-    where_days = f"AND trade_date >= date(?, '-{days} days')" if days else ""
-    params = [*ids, as_of] if days else ids
+    # 注意：as_of 源自上游外部数据（trade_date 的 MAX），必须绑参不得 f-string 拼接。
+    # 窗口语义与 source_detail 一致：给了 start/end 任一即覆盖 range 档位（start 优先）；
+    # start/end 为用户输入必须绑参；end 缺省 = as_of（查询天然 ≤ MAX(trade_date)，无需上界）
+    if start is not None or end is not None:
+        conds, wparams = [], []
+        if start is not None:
+            conds.append("trade_date >= ?")
+            wparams.append(start)
+        if end is not None:
+            conds.append("trade_date <= ?")
+            wparams.append(end)
+        where_days = "AND " + " AND ".join(conds)
+        params = [*ids, *wparams]
+    else:
+        where_days = f"AND trade_date >= date(?, '-{days} days')" if days else ""
+        params = [*ids, as_of] if days else ids
     if normalize:
         sql = f"""SELECT instrument_id, trade_date, value,
                          FIRST_VALUE(value) OVER (PARTITION BY instrument_id ORDER BY trade_date) base

@@ -9,10 +9,15 @@ from backend.fetchers.base import build_fetcher
 FIX = Path(__file__).parent / "fixtures" / "futures_inventory_cu.json"
 
 @pytest.fixture
-def cu_fetcher(conn, monkeypatch):
-    src = conn.execute("SELECT * FROM sources WHERE id='cu-inventory'").fetchone()
-    insts = conn.execute(
-        "SELECT * FROM instruments WHERE source_id='cu-inventory'").fetchall()
+def cu_fetcher(monkeypatch):
+    # v1.2 起 cu-inventory 独立源并入 copper 商品组，seed 不再有该源行——
+    # 本文件仍测旧 fetcher 模块（akshare.futures_inventory_em）的解析逻辑，
+    # src/insts 内联构造、不依赖 seed 内容
+    src = {"id": "cu-inventory", "name": "电解铜库存", "group_name": "大宗商品",
+           "freq": "daily", "fetcher": "akshare.futures_inventory_em", "unit": "吨",
+           "movement_th": 2.0, "lag_days": 1, "enabled": 1, "sort_order": 2}
+    insts = [{"id": "cu-inventory", "source_id": "cu-inventory", "code": "cu",
+              "metric": "inventory", "name": "SHFE电解铜库存", "sort_order": 3}]
     # fixture 的日期列经 to_json 是 epoch-ms int（Task 4 实测）；
     # fallback 样本为字符串日期，覆盖字符串分支
     df = pd.read_json(FIX) if FIX.exists() else pd.DataFrame([

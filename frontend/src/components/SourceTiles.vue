@@ -20,8 +20,13 @@ const hasChange = (s) => s.day_change != null && (s.total_value - s.day_change) 
                   :to="`/source/${s.id}`">
         <div class="tile-name">{{ s.name }}</div>
         <div class="tile-val">
-          {{ fmtVal(s.total_value, s.unit) }}
-          <span v-if="hasChange(s)" :class="pctColor(s.day_change)">{{ fmtChange(s.day_change, dayPct(s)) }}</span>
+          <template v-if="s.total_value != null">
+            {{ fmtVal(s.total_value, s.unit) }}
+            <span v-if="hasChange(s)" :class="pctColor(s.day_change)">{{ fmtChange(s.day_change, dayPct(s)) }}</span>
+          </template>
+          <!-- v1.2：unit='混合' 的商品组源不跨量纲求和（API 置 NULL）——有数据显示"数据见详情"，无数据显示"—" -->
+          <span v-else-if="s.latest_date" class="tile-nosum">数据见详情</span>
+          <span v-else>—</span>
         </div>
         <div class="tile-meta">{{ s.inst_count }} 项 · 数据截至 {{ s.latest_date ?? "累积中" }}</div>
       </RouterLink>
@@ -37,5 +42,6 @@ const hasChange = (s) => s.day_change != null && (s.total_value - s.day_change) 
 .tile-name { font-weight:600; font-size:14px; }
 .tile-val { font-size:16px; font-weight:700; margin-top:4px; font-variant-numeric: tabular-nums; }
 .tile-val span { font-size:11px; font-weight:400; margin-left:4px; }
+.tile-nosum { color:#999; font-size:12px; font-weight:400; }
 .tile-meta { color:#999; font-size:11px; margin-top:4px; }
 </style>

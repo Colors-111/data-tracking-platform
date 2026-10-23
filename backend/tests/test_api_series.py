@@ -50,3 +50,36 @@ def test_series_expands_source_id(client, cross_source):
     assert body["as_of_date"] == "2026-10-15"
     assert len(body["series"]) == 1   # 只有 510300 有数据，其余 4 只空序列不出现
     assert body["series"][0]["instrument_id"] == "510300"
+
+
+@pytest.fixture
+def span_years(conn):
+    # 横跨 6 年的单 instrument 数据：as_of=2026-10-15；
+    # 5y 下界 = 2021-10-14（-1827 天），3y 下界 = 2023-10-15（-1096 天）
+    for d, v in [("2021-06-01", 90), ("2022-01-01", 100),
+                 ("2023-06-01", 105), ("2024-01-01", 110), ("2026-10-15", 120)]:
+        conn.execute("INSERT INTO observations VALUES('510300','share',?,?,NULL,'t')", (d, v))
+    conn.commit()
+
+
+def test_series_range_3y_5y(client, span_years):
+    r5 = client.get("/api/series?instruments=510300&range=5y").json()
+    assert [p[0] for p in r5["series"][0]["points"]] == \
+        ["2022-01-01", "2023-06-01", "2024-01-01", "2026-10-15"]   # 2021-06-01 在 5y 窗口外
+    r3 = client.get("/api/series?instruments=510300&range=3y").json()
+    assert [p[0] for p in r3["series"][0]["points"]] == ["2024-01-01", "2026-10-15"]
+
+
+def test_series_custom_start_end(client, span_years):
+    # 自定义窗口覆盖 range 档位：range 默认 6m，start/end 同时给 → start 优先
+    body = client.get("/api/series?instruments=510300&start=2022-06-01&end=2025-01-01").json()
+    assert [p[0] for p in body["series"][0]["points"]] == ["2023-06-01", "2024-01-01"]
+    # normalize 与自定义窗口叠加：基线 = 窗口内首个非空值（105）
+    nb = client.get("/api/series?instruments=510300&start=2022-06-01&end=2025-01-01&normalize=1").json()
+    pts = nb["series"][0]["points"]
+    assert pts[0][1] == pytest.approx(100.0)
+    assert pts[-1][1] == pytest.approx(110 / 105 * 100, abs=0.01)
+    # 非法日期格式 / start 晚于 end → 400
+    assert client.get("/api/series?instruments=510300&start=banana").status_code == 400
+    assert client.get("/api/series?instruments=510300&end=nope").status_code == 400
+    assert client.get("/api/series?instruments=510300&start=2026-01-01&end=2020-01-01").status_code == 400

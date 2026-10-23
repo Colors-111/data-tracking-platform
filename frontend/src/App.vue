@@ -38,7 +38,7 @@ onMounted(async () => {
 * { box-sizing: border-box; }
 body { margin: 0; font-family: system-ui, "PingFang SC", "Microsoft YaHei", sans-serif; background:#f5f6f8; }
 .layout { display: flex; min-height: 100vh; }
-.sidebar { width: 210px; background: var(--sidebar); color: #aab; padding: 16px 10px; flex-shrink: 0; }
+.sidebar { width: 210px; background: var(--sidebar); color: #aab; padding: 16px 10px; flex-shrink: 0; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
 .brand { color: #fff; font-weight: 700; font-size: 18px; margin-bottom: 4px; }
 .brand span { display:block; color:#667; font-size: 11px; font-weight: 400; }
 .group-label { color:#556; font-size: 11px; margin: 14px 8px 4px; }

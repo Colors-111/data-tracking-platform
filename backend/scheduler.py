@@ -1,16 +1,24 @@
-"""常驻调度器：交易日 16:40（Asia/Shanghai）触发采集；启动时补跑漏掉的交易日。
+"""常驻调度器：交易日 09:00 / 16:40 两档（Asia/Shanghai）触发采集；启动时补跑漏掉的交易日。
    替代宿主机 systemd timer（docker 原生、日历感知、自带补跑）。
 
    用法：uv run python -m backend.scheduler
 
-   语义要点：
-   - 例行跑（当日 16:40）目标日 = 前一交易日（lag=1），故"昨日交易日"是源是否
-     落后的判定基准线；今天的数据由今日 16:40 例行跑覆盖，不算错过；
+   双档语义（16:40 看当日、09:00 看昨日兜底）：
+   - 16:40 档：带 --same-day 抓当日（实测交易所收盘后不久即公布当日份额终值，
+     周五 15:25 与 17:03 的快照完全一致）——当日数据当日可见；并覆盖商品等
+     当日盘后数据。含完整性保险：当日行数 < 前一交易日 50% 视为"未公布齐"，
+     不落库，该日保持未覆盖；
+   - 09:00 档：不带 --same-day，目标日 = 前一交易日（lag 语义）兜底——16:40
+     未公布齐/漏抓的数据次日上午补齐（该日正是 lag=1 的目标日，自愈闭环）；
+   - 两档跑同一套"例行采集 + catchup"：upsert 幂等（第二档重抓不产生重复行），
+     catchup 的 backfill 按目标日覆盖跳过——已取到时补查近乎零开销；
+   - 源是否落后的判定基准线 = 昨日交易日（09:00 档 lag=1 例行保证）；16:40 抓
+     当日属超额进度不计入基准线，今天的 16:40 档目标日也不算错过；
    - missed_dates/catchup 只看已有数据的源：max 为 NULL 视为未初始化，
      归首次手动回补管（README 快速开始的 --backfill 步骤），否则新库会被判
      "缺失全部历史"；
-   - 回补区间 d_to=昨日：今日例行跑会覆盖最新目标日，避免与之重复 fetch；
-     若某日例行失败，次日启动补跑会把缺口自动追上（backfill 断点续跑语义）。"""
+   - 回补区间 d_to=昨日：今日 09:00 例行跑的目标日正是昨日，避免重复 fetch；
+     若某日例行失败，次日启动/下一档触发会把缺口自动追上（backfill 断点续跑语义）。"""
 import datetime as dt
 import logging
 import time
@@ -19,7 +27,7 @@ from .app.db import connect, init_db
 from . import collect as C
 
 log = logging.getLogger("scheduler")
-RUN_TIME = dt.time(16, 40)
+RUN_TIMES = (dt.time(9, 0), dt.time(16, 40))
 
 
 def _trade_days():
@@ -37,25 +45,30 @@ def _is_trade_day(d: dt.date) -> bool:
 
 
 def next_run(now: dt.datetime) -> dt.datetime:
-    """下一个交易日 16:40（本地时间；容器 TZ=Asia/Shanghai）。
+    """下一个交易日的最近触发档（09:00 / 16:40；本地时间，容器 TZ=Asia/Shanghai）。
 
     日历耗尽双保险：_is_trade_day 对超出日历上界的日期按工作日降级；此处再设
     400 次迭代上限，超限告警并按工作日推算返回——常驻进程跨年绝不假死。
     """
-    candidate = now.replace(hour=RUN_TIME.hour, minute=RUN_TIME.minute,
-                            second=0, microsecond=0)
-    # 恰为 16:40:00.000000（candidate == now）也顺延：主循环 sleep 醒来于
-    # 16:40:00.00x 后才重算此分支，恒等情形实际不可达，纯防御
-    if candidate <= now:
-        candidate += dt.timedelta(days=1)
+    day = now.replace(hour=0, minute=0, second=0, microsecond=0)
     for _ in range(400):
-        if _is_trade_day(candidate.date()):
-            return candidate
-        candidate += dt.timedelta(days=1)
+        if _is_trade_day(day.date()):
+            for t in RUN_TIMES:
+                c = day.replace(hour=t.hour, minute=t.minute)
+                # 恰为触发点（candidate == now）也顺延：主循环 sleep 醒来于
+                # 09:00:00.00x 后才重算此分支，恒等情形实际不可达，纯防御
+                if c > now:
+                    return c
+        day += dt.timedelta(days=1)
     log.error("连续 400 日未找到交易日（交易日历异常？），按工作日降级推算下次采集")
-    while candidate.weekday() >= 5:
-        candidate += dt.timedelta(days=1)
-    return candidate
+    while day.weekday() >= 5:
+        day += dt.timedelta(days=1)
+    return day.replace(hour=RUN_TIMES[0].hour, minute=RUN_TIMES[0].minute)
+
+
+def _slot_args(scheduled: dt.datetime) -> list[str]:
+    """触发档 → collect 参数：16:40 档带 --same-day 抓当日；09:00 档无参抓前一交易日。"""
+    return ["--same-day"] if scheduled.time() == RUN_TIMES[1] else []
 
 
 def _stale_sources(conn, today: dt.date):
@@ -101,7 +114,7 @@ def _run_catchup_backfill(conn, source, d_from: str) -> int:
     不重写循环；scheduler 的 conn 仅做读诊断。WAL 下写（collect 连接）与读
     （scheduler 连接）互不阻塞，busy_timeout 兜底；CPython 引用计数会在
     C.main 返回后关闭其临时连接，常驻进程不积压句柄。
-    d_to 取昨日而非今天：今日 16:40 例行跑的目标日正是昨日，避免重复 fetch。
+    d_to 取昨日而非今天：今日 09:00 例行跑的目标日正是昨日，避免重复 fetch。
     """
     yesterday = C.previous_trade_date(dt.date.today().isoformat(), 1)
     rc = C.main(["--backfill", "--from", d_from, "--to", yesterday,
@@ -115,9 +128,9 @@ def _run_catchup_backfill(conn, source, d_from: str) -> int:
 def catchup_if_stale(conn, today: dt.date) -> int:
     """对落后的启用源逐个跑 backfill（复用幂等 upsert）；返回处理的源数。
 
-    触发保守：仅 source_max_date < 昨日交易日 才补。正常情况昨日 16:40 例行跑
+    触发保守：仅 source_max_date < 昨日交易日 才补。正常情况今晨 09:00 例行跑
     已把源推到前日目标日，此时回补区间内的目标日均已覆盖、逐日跳过，近乎零开销
-    ——真正有产出的是"昨日例行失败/调度器停了几天"的场景。
+    ——真正有产出的是"例行失败/调度器停了几天"的场景。
     """
     stale = _stale_sources(conn, today)
     for s, max_d, d_from, horizon in stale:
@@ -137,11 +150,13 @@ def main():
         log.info("启动补跑：%d 个源已追平", n)
     while True:
         nxt = next_run(dt.datetime.now())
-        log.info("下次采集：%s", nxt)
+        slot_args = _slot_args(nxt)
+        log.info("下次采集：%s（%s）", nxt,
+                 "16:40 档抓当日" if slot_args else "09:00 档抓前一交易日")
         time.sleep(max((nxt - dt.datetime.now()).total_seconds(), 1))
         log.info("触发例行采集")
         try:
-            C.main([])   # 默认 --date 今天（目标日=前一交易日）
+            C.main(slot_args)   # 16:40 带 --same-day 抓当日；09:00 默认 --date 今天（目标日=前一交易日）
         except Exception:
             log.exception("例行采集异常，下个周期继续")
         # 例行跑后立即再查补跑（防当天早停漏日）

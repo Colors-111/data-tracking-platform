@@ -5,7 +5,10 @@ INSERT OR IGNORE INTO sources(id,name,group_name,freq,fetcher,unit,movement_th,l
  ('csi500-etf','中证500 ETF','指数 ETF','daily','akshare.etf_scale','亿份',1.0,1,1,10),
  ('star50-etf','科创50 ETF','指数 ETF','daily','akshare.etf_scale','亿份',1.0,1,1,11),
  ('chinext-etf','创业板 ETF','指数 ETF','daily','akshare.etf_scale','亿份',1.0,1,1,12),
- ('dividend-etf','红利 ETF','指数 ETF','daily','akshare.etf_scale','亿份',1.0,1,1,13);
+ ('dividend-etf','红利 ETF','指数 ETF','daily','akshare.etf_scale','亿份',1.0,1,1,13),
+ ('a500-etf','中证A500 ETF','指数 ETF','daily','akshare.etf_scale','亿份',1.0,1,1,14),
+ ('sse50-etf','上证50 ETF','指数 ETF','daily','akshare.sse_etf_scale','亿份',1.0,1,1,15),
+ ('zz1000-etf','中证1000 ETF','指数 ETF','daily','akshare.etf_scale','亿份',1.0,1,1,16);
 
 INSERT OR IGNORE INTO instruments(id,source_id,code,metric,name,sort_order) VALUES
  ('510300','hs300-etf','510300','share','沪深300ETF华泰柏瑞',1),
@@ -13,6 +16,12 @@ INSERT OR IGNORE INTO instruments(id,source_id,code,metric,name,sort_order) VALU
  ('510320','hs300-etf','510320','share','沪深300ETF中金',3),
  ('510330','hs300-etf','510330','share','沪深300ETF华夏',4),
  ('510350','hs300-etf','510350','share','沪深300ETF工银',5),
+ ('159919','hs300-etf','159919','share','沪深300ETF嘉实',6),
+ ('515330','hs300-etf','515330','share','天弘沪深300ETF',7),
+ ('515390','hs300-etf','515390','share','HS300ETF',8),
+ ('159673','hs300-etf','159673','share','沪深300ETF鹏华',9),
+ ('510360','hs300-etf','510360','share','广发300ETF',10),
+ ('510380','hs300-etf','510380','share','国寿300ETF',11),
  ('cu-inventory','cu-inventory','cu','inventory','电解铜库存',1),
  ('coal-price','coal-price',NULL,'price','动力煤现货价',1),
  ('159922','csi500-etf','159922','share','中证500ETF嘉实',1),
@@ -24,6 +33,115 @@ INSERT OR IGNORE INTO instruments(id,source_id,code,metric,name,sort_order) VALU
  ('159915','chinext-etf','159915','share','创业板ETF易方达',1),
  ('159949','chinext-etf','159949','share','创业板50ETF华安',2),
  ('159952','chinext-etf','159952','share','创业板ETF广发',3),
+ ('159967','chinext-etf','159967','share','创业板成长ETF华夏',4),
+ ('159977','chinext-etf','159977','share','创业板ETF天弘',5),
  ('512890','dividend-etf','512890','share','红利低波ETF',1),
  ('515450','dividend-etf','515450','share','红利50ETF',2),
- ('515180','dividend-etf','515180','share','中证红利ETF',3);
+ ('515180','dividend-etf','515180','share','中证红利ETF',3),
+ ('563020','dividend-etf','563020','share','低波红利ETF',4),
+ ('515080','dividend-etf','515080','share','中证红利ETF',5),
+ ('159352','a500-etf','159352','share','A500ETF南方',1),
+ ('159361','a500-etf','159361','share','A500ETF易方达',2),
+ ('159338','a500-etf','159338','share','中证A500ETF国泰',3),
+ ('510050','sse50-etf','510050','share','上证50ETF华夏',1),
+ ('512100','zz1000-etf','512100','share','中证1000ETF南方',1),
+ ('560010','zz1000-etf','560010','share','1000基金华泰柏瑞',2),
+ ('159845','zz1000-etf','159845','share','中证1000ETF广发',3);
+
+-- ============ v1.2 商品组源（铜/铝/氧化铝/黄金） ============
+-- 每商品一个 source，内含多个不同 metric 的 instruments（价格/库存/仓单/资金），
+-- 混合单位 → instruments.unit 品种级单位；sources.unit='混合'（前端按 instrument.unit 显示）
+INSERT OR IGNORE INTO sources(id,name,group_name,freq,fetcher,unit,movement_th,lag_days,enabled,sort_order) VALUES
+ ('copper','铜','大宗商品','daily','akshare.composite','混合',1.0,1,1,20),
+ ('aluminum','铝','大宗商品','daily','akshare.composite','混合',1.0,1,1,21),
+ ('alumina','氧化铝','大宗商品','daily','akshare.composite','混合',1.0,1,1,22),
+ ('gold','黄金','大宗商品','daily','akshare.composite','混合',1.0,1,1,23);
+-- cu-inventory 并入铜组（instrument id 不变，观测无缝保留）
+INSERT INTO instruments(id,source_id,code,metric,unit,name,sort_order) VALUES
+ ('cu-inventory','copper','cu','inventory','吨','SHFE电解铜库存',3)
+ ON CONFLICT(id) DO UPDATE SET source_id='copper', unit='吨', name='SHFE电解铜库存', sort_order=3;
+DELETE FROM sources WHERE id='cu-inventory';   -- job_runs.source_id 无 FK，历史留痕不受影响
+-- 铜组其余品种（composite fetcher 按 code 家族编排：SHFE日K/现货/仓单/LME/CFTC）
+INSERT OR IGNORE INTO instruments(id,source_id,code,metric,unit,name,sort_order) VALUES
+ ('cu-shfe-price','copper','CU0','price','元/吨','SHFE沪铜主力',1),
+ ('cu-spot-price','copper','CU','price','元/吨','现货铜价',2),
+ ('cu-warrant','copper','CU-WARRANT','warehouse','吨','SHFE铜仓单',4),
+ ('cu-lme-stock','copper','LME-CU-STOCK','inventory','吨','LME铜库存',5),
+ ('cu-lme-warrant','copper','LME-CU-WARRANT','warehouse','吨','LME铜注册仓单',6),
+ ('cu-lme-holding','copper','LME-CU-POS','positioning','张','LME铜净持仓',7);
+-- 铝组
+INSERT OR IGNORE INTO instruments(id,source_id,code,metric,unit,name,sort_order) VALUES
+ ('al-shfe-price','aluminum','AL0','price','元/吨','SHFE沪铝主力',1),
+ ('al-spot-price','aluminum','AL','price','元/吨','现货铝价',2),
+ ('al-inventory','aluminum','al','inventory','吨','东财铝库存',3),
+ ('al-warrant','aluminum','AL-WARRANT','warehouse','吨','SHFE铝仓单',4),
+ ('al-lme-stock','aluminum','LME-AL-STOCK','inventory','吨','LME铝库存',5),
+ ('al-lme-warrant','aluminum','LME-AL-WARRANT','warehouse','吨','LME铝注册仓单',6),
+ ('al-lme-holding','aluminum','LME-AL-POS','positioning','张','LME铝净持仓',7);
+-- 氧化铝组
+INSERT OR IGNORE INTO instruments(id,source_id,code,metric,unit,name,sort_order) VALUES
+ ('ao-shfe-price','alumina','AO0','price','元/吨','SHFE氧化铝主力',1),
+ ('ao-spot-price','alumina','AO','price','元/吨','现货氧化铝价',2),
+ ('ao-inventory','alumina','ao','inventory','吨','东财氧化铝库存',3),
+ ('ao-warrant','alumina','AO-WARRANT','warehouse','吨','SHFE氧化铝仓单',4);
+-- 黄金组
+INSERT OR IGNORE INTO instruments(id,source_id,code,metric,unit,name,sort_order) VALUES
+ ('au-shfe-price','gold','AU0','price','元/克','SHFE沪金主力',1),
+ ('au-sge-price','gold','AU9999','price','元/克','SGE黄金现货',2),
+ ('au-warrant','gold','AU-WARRANT','warehouse','千克','SHFE黄金仓单',3),
+ ('au-reserve','gold','GOLD-RESERVE','reserve','万盎司','央行黄金储备',4),
+ ('518880','gold','518880','holding','亿份','黄金ETF华安',5),
+ ('518800','gold','518800','holding','亿份','黄金基金国泰',6),
+ ('518660','gold','518660','holding','亿份','工银黄金',7),
+ ('au-cftc','gold','CFTC-AU','positioning','手','CFTC黄金非商业净多',8),
+ ('au-london-price','gold','XAU','price','美元/盎司','伦敦金现',9),
+ -- v1.2.1 SPDR 黄金 ETF 持仓（吨，全球最大黄金 ETF）。sort_order 挂尾部 10：
+ -- INSERT OR IGNORE 不更新已有行，重排 518880/518800/518660 之间需 UPDATE 存量
+ -- （会引入一次性迁移语义），本轮不做——列表展示顺序 9→10 仅差一位，可接受
+ ('au-gld-spdr','gold','SPDR-GLD','holding','吨','SPDR黄金ETF持仓(全球)',10);
+
+-- ============ v1.3 全市场 ETF 资金流（设计 §5.3） ============
+-- 自选跟踪源：instruments 初始为空，POST /api/watchlist 一键注册时补写；
+-- 注册时从 etf_snapshots 回填该 code 全部历史 observations（零外部调用）。
+-- fetcher 'local.snapshot' 读快照表产出未来日期观测（历史已在注册时回填）。
+INSERT OR IGNORE INTO sources(id,name,group_name,freq,fetcher,unit,movement_th,lag_days,enabled,sort_order) VALUES
+ ('etf-watchlist','自选 ETF','自选跟踪','daily','local.snapshot','亿份',1.0,1,1,30);
+
+-- ============ v1.3.x 大 ETF 补齐（90% 原则） ============
+-- 纯指数类别补齐大 ETF：中证500 +2（510500/510580）、中证1000 +1（159633）、
+-- A500 +8（含 3 只由 etf_snapshots 份额排序精算选出：560610/159353/560530，
+-- 补足后 tracked/类别合计 ≥88%）。历史观测由 migrations/2026-10-17-etf-category-backfill.sql
+-- 从 etf_snapshots 幂等回填（零外部调用）；unit 为 NULL → API/前端回退源单位（亿份）。
+-- 家族类（创业板/红利）确认不补品种：成员庞杂（84/82 只）且分散，跟踪合计无代表性。
+INSERT OR IGNORE INTO instruments(id,source_id,code,metric,name,sort_order) VALUES
+ ('510500','csi500-etf','510500','share','500ETF南方',4),
+ ('510580','csi500-etf','510580','share','ZZ500ETF',5),
+ ('512510','csi500-etf','512510','share','ETF500',6),
+ ('159633','zz1000-etf','159633','share','中证1000ETF易方达',4),
+ ('563360','a500-etf','563360','share','A500基金',4),
+ ('512050','a500-etf','512050','share','A500E',5),
+ ('563800','a500-etf','563800','share','A500龙头',6),
+ ('159351','a500-etf','159351','share','A500ETF嘉实',7),
+ ('563220','a500-etf','563220','share','A500富国',8),
+ ('560610','a500-etf','560610','share','A500指数',9),
+ ('159353','a500-etf','159353','share','中证A500ETF景顺',10),
+ ('560530','a500-etf','560530','share','A500ETF',11);
+
+-- ============ v1.4 融资融券（设计 §5.4） ============
+-- 市场杠杆资金追踪：沪深分开余额类（乐咕，元→亿元）+ 全市场杠杆状况类
+-- （中证金融账户统计：担保比例 %、担保物 亿元、参与交易投资者数 个→万人）。
+-- 全历史一次拉取（回补 3 请求）；当日晚间更新当日 → 16:40 档 empty、次日 09:00 补。
+INSERT OR IGNORE INTO sources(id,name,group_name,freq,fetcher,unit,movement_th,lag_days,enabled,sort_order) VALUES
+ ('margin','融资融券','市场资金','daily','akshare.margin','混合',2.0,1,1,40);
+INSERT OR IGNORE INTO instruments(id,source_id,code,metric,unit,name,sort_order) VALUES
+ ('margin-sh-financing','margin','MARGIN-SH-FINANCING','financing','亿元','沪市融资余额',1),
+ ('margin-sh-securities','margin','MARGIN-SH-SECURITIES','securities','亿元','沪市融券余额',2),
+ ('margin-sh-total','margin','MARGIN-SH-TOTAL','total','亿元','沪市两融余额',3),
+ ('margin-sh-buying','margin','MARGIN-SH-BUYING','buying','亿元','沪市融资买入额',4),
+ ('margin-sz-financing','margin','MARGIN-SZ-FINANCING','financing','亿元','深市融资余额',5),
+ ('margin-sz-securities','margin','MARGIN-SZ-SECURITIES','securities','亿元','深市融券余额',6),
+ ('margin-sz-total','margin','MARGIN-SZ-TOTAL','total','亿元','深市两融余额',7),
+ ('margin-sz-buying','margin','MARGIN-SZ-BUYING','buying','亿元','深市融资买入额',8),
+ ('margin-maintenance','margin','MARGIN-MAINTENANCE','maintenance','%','平均维持担保比例(全市场)',9),
+ ('margin-collateral','margin','MARGIN-COLLATERAL','collateral','亿元','两融担保物总价值(全市场)',10),
+ ('margin-investors','margin','MARGIN-INVESTORS','investors','万人','参与交易投资者数(全市场)',11);

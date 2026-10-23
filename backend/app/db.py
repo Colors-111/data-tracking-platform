@@ -1,5 +1,6 @@
 """SQLite 连接与 schema 初始化。WAL 模式：并发读不阻塞每日唯一写者。"""
 import os
+import re
 import sqlite3
 from pathlib import Path
 
@@ -21,6 +22,7 @@ CREATE TABLE IF NOT EXISTS instruments (
   source_id TEXT NOT NULL REFERENCES sources(id),
   code TEXT,
   metric TEXT NOT NULL,
+  unit TEXT,                    -- v1.2：品种级单位（元/吨、吨、元/克、万盎司、亿份、张、手）
   name TEXT NOT NULL,
   sort_order INTEGER NOT NULL DEFAULT 0
 );
@@ -43,6 +45,15 @@ CREATE TABLE IF NOT EXISTS job_runs (
   started_at TEXT,
   finished_at TEXT
 );
+CREATE TABLE IF NOT EXISTS etf_snapshots (
+  trade_date TEXT NOT NULL,
+  code       TEXT NOT NULL,
+  name       TEXT NOT NULL,
+  exchange   TEXT NOT NULL,           -- 'SSE' | 'SZSE'
+  shares     REAL,
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY (trade_date, code)
+);
 """
 
 
@@ -61,11 +72,21 @@ def connect(path=None) -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA foreign_keys=ON")
+    # REGEXP（v1.3.x 类别总量聚合用）：SQLite 默认无该函数，注册 Python re.search。
+    # 用法 `name REGEXP ?`（左侧列名、右侧绑参 pattern），值 None 时恒 False
+    conn.create_function(
+        "REGEXP", 2,
+        lambda pat, val: bool(val) and re.search(pat, val) is not None,
+        deterministic=True)
     return conn
 
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    # v1.2 迁移：instruments 补 unit 列（CREATE TABLE IF NOT EXISTS 不会给老表加列）
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(instruments)")}
+    if "unit" not in cols:
+        conn.execute("ALTER TABLE instruments ADD COLUMN unit TEXT")
     seed = Path(__file__).resolve().parent.parent / "seed.sql"
     conn.executescript(seed.read_text(encoding="utf-8"))
     conn.commit()
